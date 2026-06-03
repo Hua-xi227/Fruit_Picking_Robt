@@ -1,5 +1,6 @@
 package org.example.fruitpickingrobt.websocket;
 
+import org.example.fruitpickingrobt.store.LocationStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -19,6 +20,13 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     // 所有已连接的会话
     private final CopyOnWriteArraySet<WebSocketSession> sessions = new CopyOnWriteArraySet<>();
 
+    // 轨迹存储
+    private final LocationStore locationStore;
+
+    public LocationWebSocketHandler(LocationStore locationStore) {
+        this.locationStore = locationStore;
+    }
+
     // 任务5: 连接建立，打印日志
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
@@ -32,6 +40,9 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     protected void handleTextMessage(WebSocketSession sender, TextMessage message) {
         String payload = message.getPayload();
         log.info("收到消息: id={}, payload={}", sender.getId(), payload);
+
+        // 存入轨迹
+        locationStore.add(payload);
 
         // 广播给所有连接的客户端
         for (WebSocketSession session : sessions) {
