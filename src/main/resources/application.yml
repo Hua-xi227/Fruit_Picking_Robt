@@ -3,7 +3,7 @@ server:
 
 spring:
   datasource:
-    url: jdbc:mysql://localhost:3306/fruitpicking?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    url: jdbc:mysql://fruitpicking-mysql:3306/fruitpicking?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
     username: root
     password: 1234
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -14,7 +14,7 @@ spring:
 
   # Redis 配置
   redis:
-    host: 192.168.195.128
+    host: fruitpicking-redis
     port: 6379
     password:
     database: 0
@@ -43,10 +43,13 @@ spring:
           auth: true
           ssl:
             enable: true
+            protocols: TLSv1.2
           starttls:
             enable: true
+            required: true
           socketFactory:
             class: javax.net.ssl.SSLSocketFactory
+            port: 465
 # MyBatis 配置
 mybatis:
   mapper-locations: classpath:mapper/*.xml
@@ -70,3 +73,18 @@ app:
   max-history-points: 200
   # 是否启用 Redis 缓存最新位置
   use-redis-cache: true
+
+  security:
+    jwt:
+      header: Authorization
+      token-start-with: "Bearer"
+      base64-secret: "your-256-bit-secret-key-here-please-use-a-long-random-string"   # 注意是 base64-secret
+      token-validity-seconds: 86400   # 注意是 token-validity-seconds
+      ignore-paths:
+        - /api/v1/codes/**
+        - /api/v1/users
+        - /api/v1/users/login
+        - /api/v1/password-reset
+        - /error
+      admin-paths:
+        - /api/v1/admin/**
