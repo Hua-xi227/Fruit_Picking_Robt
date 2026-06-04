@@ -74,17 +74,17 @@ app:
   # 是否启用 Redis 缓存最新位置
   use-redis-cache: true
 
-  security:
-    jwt:
-      header: Authorization
-      token-start-with: "Bearer"
-      base64-secret: "your-256-bit-secret-key-here-please-use-a-long-random-string"   # 注意是 base64-secret
-      token-validity-seconds: 86400   # 注意是 token-validity-seconds
-      ignore-paths:
-        - /api/v1/codes/**
-        - /api/v1/users
-        - /api/v1/users/login
-        - /api/v1/password-reset
-        - /error
-      admin-paths:
-        - /api/v1/admin/**
+security:
+  jwt:
+    header: Authorization
+    token-start-with: "Bearer"
+    base64-secret: "your-256-bit-secret-key-here-please-use-a-long-random-string"   # 注意是 base64-secret
+    token-validity-seconds: 86400   # 注意是 token-validity-seconds
+    ignore-paths:
+      - /api/v1/codes/**
+      - /api/v1/users
+      - /api/v1/users/login
+      - /api/v1/password-reset
+      - /error
+    admin-paths:
+      - /api/v1/admin/**
