@@ -86,5 +86,8 @@ security:
       - /api/v1/users/login
       - /api/v1/password-reset
       - /error
+      - /api/history
+      - /api/latest
+      - /ws/**
     admin-paths:
       - /api/v1/admin/**
