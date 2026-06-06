@@ -9,6 +9,9 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.io.IOException;
 import java.util.concurrent.CopyOnWriteArraySet;
 
@@ -35,14 +38,25 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
                 session.getId(), session.getRemoteAddress(), sessions.size());
     }
 
+    private static final ObjectMapper objectMapper = new ObjectMapper();
+
     // 任务3+4: 接收模拟器发送的 JSON 位置消息 {lat, lng, bearing}，广播给所有前端
     @Override
     protected void handleTextMessage(WebSocketSession sender, TextMessage message) {
         String payload = message.getPayload();
         log.info("收到消息: id={}, payload={}", sender.getId(), payload);
 
-        // 存入轨迹
-        locationStore.add(payload);
+        // 只存储坐标数据，过滤掉控制指令
+        try {
+            JsonNode json = objectMapper.readTree(payload);
+            if (json.has("lat") && json.has("lng")) {
+                locationStore.add(payload);
+            } else {
+                log.info("非坐标消息，跳过存储: {}", payload);
+            }
+        } catch (Exception e) {
+            log.warn("消息解析失败，跳过存储: {}", payload);
+        }
 
         // 广播给所有连接的客户端
         for (WebSocketSession session : sessions) {
