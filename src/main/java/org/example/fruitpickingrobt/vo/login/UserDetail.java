@@ -17,9 +17,17 @@ public class UserDetail {
      */
     Integer role;
     /**
+     * 手机号
+     */
+    private String phone;
+    /**
      * 状态 0-禁用 1-正常
      */
     Integer status;
+    /**
+     * 邮箱
+     */
+    private String email;
     /**
      * 创建时间
      */

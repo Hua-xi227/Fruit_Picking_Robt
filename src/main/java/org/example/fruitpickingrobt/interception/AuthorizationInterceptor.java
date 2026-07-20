@@ -73,8 +73,16 @@ public class AuthorizationInterceptor implements HandlerInterceptor {
         }
 
         String jwt = token.substring(properties.getTokenStartWith().length());
+
+        // 增加日志：打印 Redis key
+        String key = LoginConstant.TOKEN_CACHE_PREFIX + jwt;
+        log.info("Redis key: {}", key);
+
         // token不为空，开始解析
         String s = stringRedisTemplate.opsForValue().get(LoginConstant.TOKEN_CACHE_PREFIX + jwt);
+
+        log.info("Redis value (userId): {}", s);  // 如果为 null 会打印 null
+
         Long userId = null;
 
         if (s != null && !s.trim().isEmpty()) {
