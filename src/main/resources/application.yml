@@ -67,12 +67,9 @@ logging:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
 
 
-# 自定义应用配置
 app:
-  # 轨迹保留最大点数
-  max-history-points: 200
-  # 是否启用 Redis 缓存最新位置
-  use-redis-cache: true
+  history-default-limit: 1000
+  history-max-limit: 5000
 
 security:
   jwt:
@@ -86,8 +83,7 @@ security:
       - /api/v1/users/login
       - /api/v1/password-reset
       - /error
-      - /api/history
-      - /api/latest
+      - /api/devices/**
       - /ws/**
     admin-paths:
       - /api/v1/admin/**

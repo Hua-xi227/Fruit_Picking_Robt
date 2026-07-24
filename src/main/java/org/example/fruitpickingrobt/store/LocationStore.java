@@ -3,14 +3,13 @@ package org.example.fruitpickingrobt.store;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.util.Collections;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
+/** Redis 中每台设备的最新位置、状态和机械臂参数。 */
 @Component
 public class LocationStore {
-
-    private static final String KEY = "location:history";
-    private static final int MAX_SIZE = 200;
+    private static final String KEY_PREFIX = "device:latest:";
 
     private final StringRedisTemplate redis;
 
@@ -18,23 +17,14 @@ public class LocationStore {
         this.redis = redis;
     }
 
-    // 存入一个点，超过200个则移除最早的
-    public void add(String locationJson) {
-        redis.opsForList().rightPush(KEY, locationJson);
-        Long size = redis.opsForList().size(KEY);
-        if (size != null && size > MAX_SIZE) {
-            redis.opsForList().leftPop(KEY);
-        }
+    public void put(String deviceId, String field, String payloadJson) {
+        redis.opsForHash().put(KEY_PREFIX + deviceId, field, payloadJson);
     }
 
-    // 返回所有历史点
-    public List<String> getAll() {
-        List<String> list = redis.opsForList().range(KEY, 0, -1);
-        return list != null ? list : Collections.emptyList();
-    }
-
-    // 返回最新一个点，没有则返回 null
-    public String getLatest() {
-        return redis.opsForList().index(KEY, -1);
+    public Map<String, String> getAll(String deviceId) {
+        Map<String, String> result = new HashMap<>();
+        redis.opsForHash().entries(KEY_PREFIX + deviceId)
+                .forEach((field, value) -> result.put(field.toString(), value.toString()));
+        return result;
     }
 }
