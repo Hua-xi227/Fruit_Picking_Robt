@@ -6,11 +6,21 @@
         <id column="id" property="id"/>
         <result column="lat" property="lat"/>
         <result column="lng" property="lng"/>
+        <result column="latitude" property="latitude"/>
+        <result column="longitude" property="longitude"/>
         <result column="bearing" property="bearing"/>
         <result column="device_id" property="deviceId"/>
         <result column="raw_data" property="rawData"/>
+        <result column="payload_json" property="payloadJson"/>
+        <result column="record_type" property="recordType"/>
         <result column="create_time" property="createTime"/>
+        <result column="recorded_at" property="recordedAt"/>
     </resultMap>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO location_records (lat, lng, latitude, longitude, bearing, device_id, raw_data, payload_json, record_type, create_time, recorded_at)
+        VALUES (#{lat}, #{lng}, #{latitude}, #{longitude}, #{bearing}, #{deviceId}, #{rawData}, #{payloadJson}, #{recordType}, NOW(), #{recordedAt})
+    </insert>
 
     <insert id="insertRecord" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO location_records (lat, lng, bearing, device_id, raw_data, create_time)
@@ -37,5 +47,19 @@
             ) AS temp
         )
     </delete>
+
+    <select id="selectLocationHistory" resultMap="LocationRecordMap">
+        SELECT * FROM location_records
+        WHERE device_id = #{deviceId}
+        ORDER BY recorded_at DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectLatestByType" resultMap="LocationRecordMap">
+        SELECT * FROM location_records
+        WHERE device_id = #{deviceId} AND record_type = #{type}
+        ORDER BY recorded_at DESC
+        LIMIT 1
+    </select>
 
 </mapper>

@@ -9,8 +9,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
-import java.util.Collections;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.stream.Collectors;
 
@@ -22,6 +22,7 @@ public class LocationStore {
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
     private final ConcurrentLinkedDeque<String> history = new ConcurrentLinkedDeque<>();
+    private final ConcurrentHashMap<String, Map<String, String>> deviceCache = new ConcurrentHashMap<>();
     private final LocationRecordDAO locationRecordDAO;
 
     public LocationStore(LocationRecordDAO locationRecordDAO) {
@@ -94,6 +95,22 @@ public class LocationStore {
                     }
                 })
                 .collect(Collectors.toList());
+    }
+
+    /** 按设备 ID 返回 {field -> payloadJson} 映射 */
+    public Map<String, String> getAll(String deviceId) {
+        Map<String, String> cached = deviceCache.get(deviceId);
+        if (cached != null) {
+            return Collections.unmodifiableMap(cached);
+        }
+        return new HashMap<>();
+    }
+
+    /** 把某个 field 的 payloadJson 写入该设备缓存 */
+    public void put(String deviceId, String field, String payloadJson) {
+        if (deviceId == null || field == null) return;
+        deviceCache.computeIfAbsent(deviceId, k -> new ConcurrentHashMap<>())
+                .put(field, payloadJson);
     }
 
     public String getLatest() {
