@@ -33,9 +33,13 @@ public class WebMvcConfig  extends WebMvcConfigurationSupport {
     }
     /**
      * 静态资源映射
+     * 把 classpath:/static/ 下的资源映射到根路径
+     * 访问示例：http://localhost:8082/simulator.html
      * **/
     @Override
     protected void addResourceHandlers(ResourceHandlerRegistry registry) {
+        registry.addResourceHandler("/**")
+                .addResourceLocations("classpath:/static/");
         super.addResourceHandlers(registry);
     }
 

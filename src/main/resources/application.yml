@@ -1,11 +1,21 @@
 server:
   port: 8082
+  # 文件上传大小限制（视频帧可能较大）
+  tomcat:
+    max-swallow-size: 10MB
 
 spring:
+  devtools:
+    restart:
+      enabled: false
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
   datasource:
-    url: jdbc:mysql://fruitpicking-mysql:3306/fruitpicking?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    url: jdbc:mysql://localhost:3306/fruitpicking?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
     username: root
-    password: 1234
+    password: 123456
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 10
@@ -14,7 +24,7 @@ spring:
 
   # Redis 配置
   redis:
-    host: fruitpicking-redis
+    host: 192.168.119.130
     port: 6379
     password:
     database: 0
@@ -50,6 +60,7 @@ spring:
           socketFactory:
             class: javax.net.ssl.SSLSocketFactory
             port: 465
+
 # MyBatis 配置
 mybatis:
   mapper-locations: classpath:mapper/*.xml
@@ -78,8 +89,8 @@ security:
   jwt:
     header: Authorization
     token-start-with: "Bearer"
-    base64-secret: "your-256-bit-secret-key-here-please-use-a-long-random-string"   # 注意是 base64-secret
-    token-validity-seconds: 86400   # 注意是 token-validity-seconds
+    base64-secret: "your-256-bit-secret-key-here-please-use-a-long-random-string"
+    token-validity-seconds: 86400
     ignore-paths:
       - /api/v1/codes/**
       - /api/v1/users
@@ -88,6 +99,9 @@ security:
       - /error
       - /api/history
       - /api/latest
+      - /api/video/**
+      - /simulator.html
+      - /test-helper.html
       - /ws/**
     admin-paths:
       - /api/v1/admin/**

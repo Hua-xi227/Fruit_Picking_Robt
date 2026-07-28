@@ -1,5 +1,6 @@
 package org.example.fruitpickingrobt.controller;
 
+import org.example.fruitpickingrobt.entity.Result;
 import org.example.fruitpickingrobt.store.LocationStore;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -16,6 +17,7 @@ import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api")
+@CrossOrigin(origins = "*")
 public class LocationController {
 
     private static final ObjectMapper objectMapper = new ObjectMapper();
@@ -25,10 +27,9 @@ public class LocationController {
         this.locationStore = locationStore;
     }
 
-    // GET /api/history 返回所有历史点
     @GetMapping("/history")
-    public List<JsonNode> history() {
-        return locationStore.getAll().stream()
+    public Result<List<JsonNode>> history() {
+        List<JsonNode> points = locationStore.getAll().stream()
                 .map(s -> {
                     try {
                         return objectMapper.readTree(s);
@@ -37,9 +38,9 @@ public class LocationController {
                     }
                 })
                 .collect(Collectors.toList());
+        return Result.success(points);
     }
 
-    // GET /api/latest 返回最新位置
     @GetMapping("/latest")
     public ResponseEntity<String> latest() {
         String latest = locationStore.getLatest();

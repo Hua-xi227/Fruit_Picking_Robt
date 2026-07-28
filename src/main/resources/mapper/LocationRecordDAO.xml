@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.fruitpickingrobt.dao.LocationRecordDAO">
+
+    <resultMap id="LocationRecordMap" type="org.example.fruitpickingrobt.entity.LocationRecord">
+        <id column="id" property="id"/>
+        <result column="lat" property="lat"/>
+        <result column="lng" property="lng"/>
+        <result column="bearing" property="bearing"/>
+        <result column="device_id" property="deviceId"/>
+        <result column="raw_data" property="rawData"/>
+        <result column="create_time" property="createTime"/>
+    </resultMap>
+
+    <insert id="insertRecord" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO location_records (lat, lng, bearing, device_id, raw_data, create_time)
+        VALUES (#{lat}, #{lng}, #{bearing}, #{deviceId}, #{rawData}, NOW())
+    </insert>
+
+    <select id="selectLatestRecords" resultMap="LocationRecordMap">
+        SELECT * FROM location_records
+        ORDER BY id DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="selectLatestRecord" resultMap="LocationRecordMap">
+        SELECT * FROM location_records
+        ORDER BY id DESC
+        LIMIT 1
+    </select>
+
+    <delete id="deleteOldRecords">
+        DELETE FROM location_records
+        WHERE id NOT IN (
+            SELECT id FROM (
+                SELECT id FROM location_records ORDER BY id DESC LIMIT #{keepCount}
+            ) AS temp
+        )
+    </delete>
+
+</mapper>
