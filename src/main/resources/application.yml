@@ -24,7 +24,7 @@ spring:
 
   # Redis 配置
   redis:
-    host: fruitpicking-redis
+    host: 192.168.195.132
     port: 6379
     password:
     database: 0
@@ -81,6 +81,9 @@ logging:
 app:
   history-default-limit: 1000
   history-max-limit: 5000
+  # 设备会话心跳超时（秒）。0 或负数 = 停用僵尸会话清理（测试用）；生产建议设 60
+  device-session:
+    stale-timeout-seconds: 0
 
 security:
   jwt:

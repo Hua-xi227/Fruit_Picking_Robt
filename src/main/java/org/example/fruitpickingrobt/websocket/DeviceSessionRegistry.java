@@ -2,6 +2,7 @@ package org.example.fruitpickingrobt.websocket;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
@@ -26,9 +27,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * 心跳保活（本次补全）：
  *   - 设备每 N 秒发一次 {"type":"heartbeat","deviceId":"..."}，register() / recordHeartbeat()
  *     都会刷新 lastHeartbeatAt；
- *   - 服务端用 @Scheduled 定时扫描，超过 STALE_TIMEOUT_SECONDS 没心跳的会话会被主动关闭并清理，
+ *   - 服务端用 @Scheduled 定时扫描，超过 staleTimeoutSeconds 没心跳的会话会被主动关闭并清理，
  *     避免「僵尸连接」一直显示在线、还能被下发指令却收不到回执。
- *   - 注意：这是应用层兜底，TCP 层本身也有 keepalive，因此 STALE_TIMEOUT_SECONDS 设得比较宽松（默认 60s）。
+ *   - 阈值通过 application.yml 的 app.device-session.stale-timeout-seconds 配置；
+ *     设为 0 或负数 = 停用清理（默认 0，便于本地测试）；生产建议设 60。
  *
  * 注意：WebSocketSession 本身不保证线程安全，调用 sendMessage 时必须做
  *       isOpen() 判断并捕获 IOException（见 CommandService）。
@@ -38,8 +40,13 @@ public class DeviceSessionRegistry {
 
     private static final Logger log = LoggerFactory.getLogger(DeviceSessionRegistry.class);
 
-    /** 心跳超过该秒数未刷新，判定为僵尸会话并强制关闭 */
-    private static final long STALE_TIMEOUT_SECONDS = 60;
+    /**
+     * 心跳超过该秒数未刷新，判定为僵尸会话并强制关闭。
+     * 通过 application.yml 的 app.device-session.stale-timeout-seconds 配置；
+     * 设 0 / 负数 = 停用清理（默认 0，便于本地测试）；生产建议设 60。
+     */
+    @Value("${app.device-session.stale-timeout-seconds:0}")
+    private long staleTimeoutSeconds;
 
     /** deviceId -> 该设备当前的 WebSocket 会话 */
     private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
@@ -106,8 +113,11 @@ public class DeviceSessionRegistry {
      */
     @Scheduled(fixedDelay = 5000)
     public void scanStaleSessions() {
+        if (staleTimeoutSeconds <= 0) {
+            return; // 清理已停用（配置 <= 0）
+        }
         long now = System.currentTimeMillis();
-        long threshold = STALE_TIMEOUT_SECONDS * 1000L;
+        long threshold = staleTimeoutSeconds * 1000L;
 
         // 复制 key 集合，避免在遍历过程中并发修改 sessions
         List<String> stale = new ArrayList<>();
