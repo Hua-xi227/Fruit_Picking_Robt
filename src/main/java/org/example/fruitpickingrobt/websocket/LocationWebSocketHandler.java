@@ -63,16 +63,22 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
             if (!node.isObject()) {
                 throw new IllegalArgumentException("消息必须是 JSON 对象");
             }
+            String type = node.path("type").asText("");
             // —— 下行控制：登记设备会话，指令需要精准下发到具体设备 ——
+            String deviceId = null;
             try {
-                String deviceId = deviceId((ObjectNode) node);
+                deviceId = deviceId((ObjectNode) node);
                 deviceSessionRegistry.register(deviceId, sender);
                 sessionDeviceIds.put(sender.getId(), deviceId);
             } catch (IllegalArgumentException ignored) {
                 // 没有合法 deviceId 的消息（如纯 ack / result）不登记
             }
+            // —— 心跳保活：任何带 deviceId 的合法消息都刷新存活时间 ——
+            if ("heartbeat".equalsIgnoreCase(type) && deviceId != null) {
+                deviceSessionRegistry.recordHeartbeat(deviceId);
+                log.debug("[心跳] deviceId={} 已刷新", deviceId);
+            }
             // —— 下行控制：把指令 ACK / 执行结果路由给 ACK 处理器 ——
-            String type = node.path("type").asText("");
             if ("ack".equalsIgnoreCase(type)) {
                 commandAckHandler.onAck(node);
             } else if ("result".equalsIgnoreCase(type)) {
