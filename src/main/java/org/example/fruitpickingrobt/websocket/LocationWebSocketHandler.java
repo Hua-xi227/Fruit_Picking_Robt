@@ -3,7 +3,9 @@ package org.example.fruitpickingrobt.websocket;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.example.fruitpickingrobt.service.control.CommandAckHandler;
 import org.example.fruitpickingrobt.service.telemetry.DeviceTelemetryService;
+import org.example.fruitpickingrobt.websocket.DeviceSessionRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -19,6 +21,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 
 /** 接收设备上报，处理后端 A 的三类数据，并保留原有 WebSocket 广播。 */
@@ -28,12 +31,21 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 
     private final CopyOnWriteArraySet<WebSocketSession> sessions = new CopyOnWriteArraySet<>();
+    /** sessionId -> deviceId，用于连接关闭时清理注册表（下行控制用） */
+    private final ConcurrentHashMap<String, String> sessionDeviceIds = new ConcurrentHashMap<>();
     private final DeviceTelemetryService telemetryService;
     private final ObjectMapper objectMapper;
+    private final DeviceSessionRegistry deviceSessionRegistry;
+    private final CommandAckHandler commandAckHandler;
 
-    public LocationWebSocketHandler(DeviceTelemetryService telemetryService, ObjectMapper objectMapper) {
+    public LocationWebSocketHandler(DeviceTelemetryService telemetryService,
+                                    ObjectMapper objectMapper,
+                                    DeviceSessionRegistry deviceSessionRegistry,
+                                    CommandAckHandler commandAckHandler) {
         this.telemetryService = telemetryService;
         this.objectMapper = objectMapper;
+        this.deviceSessionRegistry = deviceSessionRegistry;
+        this.commandAckHandler = commandAckHandler;
     }
 
     @Override
@@ -50,6 +62,21 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
             JsonNode node = objectMapper.readTree(payload);
             if (!node.isObject()) {
                 throw new IllegalArgumentException("消息必须是 JSON 对象");
+            }
+            // —— 下行控制：登记设备会话，指令需要精准下发到具体设备 ——
+            try {
+                String deviceId = deviceId((ObjectNode) node);
+                deviceSessionRegistry.register(deviceId, sender);
+                sessionDeviceIds.put(sender.getId(), deviceId);
+            } catch (IllegalArgumentException ignored) {
+                // 没有合法 deviceId 的消息（如纯 ack / result）不登记
+            }
+            // —— 下行控制：把指令 ACK / 执行结果路由给 ACK 处理器 ——
+            String type = node.path("type").asText("");
+            if ("ack".equalsIgnoreCase(type)) {
+                commandAckHandler.onAck(node);
+            } else if ("result".equalsIgnoreCase(type)) {
+                commandAckHandler.onResult(node);
             }
             dispatch((ObjectNode) node);
         } catch (IllegalArgumentException e) {
@@ -226,6 +253,11 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         sessions.remove(session);
+        // —— 下行控制：清理设备会话登记 ——
+        String deviceId = sessionDeviceIds.remove(session.getId());
+        if (deviceId != null) {
+            deviceSessionRegistry.unregister(deviceId);
+        }
         log.info("客户端断开: id={}, 当前在线={}", session.getId(), sessions.size());
     }
 

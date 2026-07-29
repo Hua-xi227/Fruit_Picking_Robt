@@ -2,6 +2,7 @@ package org.example.fruitpickingrobt.websocket;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.example.fruitpickingrobt.service.control.CommandAckHandler;
 import org.example.fruitpickingrobt.service.telemetry.DeviceTelemetryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,16 +21,22 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 class LocationWebSocketHandlerTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private DeviceTelemetryService telemetryService;
+    private DeviceSessionRegistry deviceSessionRegistry;
+    private CommandAckHandler commandAckHandler;
     private LocationWebSocketHandler handler;
 
     @BeforeEach
     void setUp() {
         telemetryService = mock(DeviceTelemetryService.class);
-        handler = new LocationWebSocketHandler(telemetryService, objectMapper);
+        deviceSessionRegistry = mock(DeviceSessionRegistry.class);
+        commandAckHandler = mock(CommandAckHandler.class);
+        handler = new LocationWebSocketHandler(
+                telemetryService, objectMapper, deviceSessionRegistry, commandAckHandler);
     }
 
     @Test
@@ -75,6 +82,7 @@ class LocationWebSocketHandlerTest {
     @Test
     void ignoresControlMessages() {
         WebSocketSession sender = mock(WebSocketSession.class);
+        when(sender.getId()).thenReturn("test-session-id");
         handler.handleTextMessage(sender,
                 new TextMessage("{\"type\":\"command\",\"deviceId\":\"car-1\"}"));
 

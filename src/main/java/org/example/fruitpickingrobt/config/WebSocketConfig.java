@@ -1,5 +1,7 @@
 package org.example.fruitpickingrobt.config;
 
+import org.example.fruitpickingrobt.service.control.CommandAckHandler;
+import org.example.fruitpickingrobt.websocket.DeviceSessionRegistry;
 import org.example.fruitpickingrobt.websocket.LocationWebSocketHandler;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
@@ -11,9 +13,15 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
 public class WebSocketConfig implements WebSocketConfigurer {
 
     private final LocationWebSocketHandler locationHandler;
+    private final DeviceSessionRegistry deviceSessionRegistry;
+    private final CommandAckHandler commandAckHandler;
 
-    public WebSocketConfig(LocationWebSocketHandler locationHandler) {
+    public WebSocketConfig(LocationWebSocketHandler locationHandler,
+                           DeviceSessionRegistry deviceSessionRegistry,
+                           CommandAckHandler commandAckHandler) {
         this.locationHandler = locationHandler;
+        this.deviceSessionRegistry = deviceSessionRegistry;
+        this.commandAckHandler = commandAckHandler;
     }
 
     @Override
