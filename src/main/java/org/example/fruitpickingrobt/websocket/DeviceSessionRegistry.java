@@ -124,6 +124,7 @@ public class DeviceSessionRegistry {
         }
 
         for (String deviceId : stale) {
+            long idleSeconds = secondsSinceHeartbeat(deviceId);
             WebSocketSession session = sessions.get(deviceId);
             if (session != null) {
                 try {
@@ -136,7 +137,7 @@ public class DeviceSessionRegistry {
             }
             unregister(deviceId);
             log.warn("[心跳超时] 已强制清理僵尸会话 deviceId={}, 闲置约{}s",
-                    deviceId, secondsSinceHeartbeat(deviceId));
+                    deviceId, idleSeconds);
         }
     }
 }
