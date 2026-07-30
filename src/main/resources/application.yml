@@ -13,7 +13,7 @@ spring:
       max-file-size: 10MB
       max-request-size: 10MB
   datasource:
-    url: jdbc:mysql://localhost:3306/fruitpicking?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    url: jdbc:mysql://fruitpicking-mysql:3306/fruitpicking?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
     username: root
     password: 1234
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -24,7 +24,7 @@ spring:
 
   # Redis 配置
   redis:
-    host: 192.168.195.132
+    host: fruitpicking-redis
     port: 6379
     password:
     database: 0

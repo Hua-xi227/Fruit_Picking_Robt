@@ -22,11 +22,6 @@
         VALUES (#{lat}, #{lng}, #{latitude}, #{longitude}, #{bearing}, #{deviceId}, #{rawData}, #{payloadJson}, #{recordType}, NOW(), #{recordedAt})
     </insert>
 
-    <insert id="insertRecord" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO location_records (lat, lng, bearing, device_id, raw_data, create_time)
-        VALUES (#{lat}, #{lng}, #{bearing}, #{deviceId}, #{rawData}, NOW())
-    </insert>
-
     <select id="selectLatestRecords" resultMap="LocationRecordMap">
         SELECT * FROM location_records
         ORDER BY id DESC
@@ -38,15 +33,6 @@
         ORDER BY id DESC
         LIMIT 1
     </select>
-
-    <delete id="deleteOldRecords">
-        DELETE FROM location_records
-        WHERE id NOT IN (
-            SELECT id FROM (
-                SELECT id FROM location_records ORDER BY id DESC LIMIT #{keepCount}
-            ) AS temp
-        )
-    </delete>
 
     <select id="selectLocationHistory" resultMap="LocationRecordMap">
         SELECT * FROM location_records

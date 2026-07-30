@@ -11,13 +11,9 @@ public interface LocationRecordDAO {
 
     int insert(LocationRecord record);
 
-    int insertRecord(LocationRecord record);
-
     List<LocationRecord> selectLatestRecords(int limit);
 
     LocationRecord selectLatestRecord();
-
-    int deleteOldRecords(int keepCount);
 
     List<LocationRecord> selectLocationHistory(@Param("deviceId") String deviceId,
                                                @Param("limit") int limit);
