@@ -73,4 +73,15 @@ public class VideoFrameStore {
     public boolean hasFrame() {
         return currentFrame.get() != null && currentFrame.get().length > 0;
     }
+
+    /**
+     * 判断当前帧是否已过期（超过指定毫秒数未更新）
+     */
+    public boolean isFrameExpired(long timeoutMs) {
+        Long last = lastUpdateTime.get();
+        if (last == null || last == 0L) {
+            return true;
+        }
+        return System.currentTimeMillis() - last > timeoutMs;
+    }
 }

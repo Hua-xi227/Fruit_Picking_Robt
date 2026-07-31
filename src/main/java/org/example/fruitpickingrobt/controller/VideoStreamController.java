@@ -5,6 +5,7 @@ import org.example.fruitpickingrobt.store.VideoFrameStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -76,8 +77,8 @@ public class VideoStreamController {
                             log.debug("推送视频帧：size={} bytes", currentFrame.length);
                         }
                     }
-                    // 等待 200ms 再检查下一帧
-                    Thread.sleep(200);
+                    // 等待 66ms 再检查下一帧（约 15fps）
+                    Thread.sleep(66);
                 }
             } catch (InterruptedException e) {
                 log.info("视频流推送被中断");
@@ -97,6 +98,10 @@ public class VideoStreamController {
      */
     @GetMapping(value = "/snapshot", produces = MediaType.IMAGE_JPEG_VALUE)
     public ResponseEntity<byte[]> getSnapshot(@RequestParam(value = "deviceId", required = false) String deviceId) {
+        // 超过 5 秒没有收到新帧，视为离线，返回 404
+        if (videoFrameStore.isFrameExpired(5000)) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
         byte[] frame = videoFrameStore.getFrame(deviceId);
         if (frame == null || frame.length == 0) {
             return ResponseEntity.noContent().build();
