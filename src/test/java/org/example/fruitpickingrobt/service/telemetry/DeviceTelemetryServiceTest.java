@@ -12,6 +12,7 @@ import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Optional;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -51,7 +52,7 @@ class DeviceTelemetryServiceTest {
     void latestFallsBackToMysqlAndBackfillsRedis() {
         when(locationStore.getAll("car-1")).thenReturn(new HashMap<>());
         LocationRecord location = record(DeviceTelemetryService.LOCATION,
-                "{\"type\":\"location\",\"lat\":30.2,\"lng\":120.1}");
+                "{\"type\":\"location\",\"lat\":30.2,\"lng\":120.1,\"altitude\":-3.2,\"speed\":1.5}");
         when(locationRecordDAO.selectLatestByType("car-1", DeviceTelemetryService.LOCATION))
                 .thenReturn(location);
 
@@ -59,13 +60,15 @@ class DeviceTelemetryServiceTest {
 
         assertThat(snapshot).isPresent();
         assertThat(snapshot.get().get("location").get("lng").asDouble()).isEqualTo(120.1);
+        assertThat(snapshot.get().at("/location/altitude").asDouble()).isEqualTo(-3.2);
+        assertThat(snapshot.get().at("/location/speed").asDouble()).isEqualTo(1.5);
         verify(locationStore).put("car-1", "location", location.getPayloadJson());
     }
 
     @Test
     void geoJsonUsesLongitudeLatitudeOrder() {
         LocationRecord record = record(DeviceTelemetryService.LOCATION,
-                "{\"type\":\"location\",\"deviceId\":\"car-1\",\"lat\":30.2,\"lng\":120.1}");
+                "{\"type\":\"location\",\"deviceId\":\"car-1\",\"lat\":30.2,\"lng\":120.1,\"altitude\":0,\"speed\":0}");
         record.setId(9L);
         record.setLatitude(30.2);
         record.setLongitude(120.1);
@@ -75,6 +78,10 @@ class DeviceTelemetryServiceTest {
         assertThat(geoJson.at("/features/0/geometry/coordinates/0").asDouble()).isEqualTo(120.1);
         assertThat(geoJson.at("/features/0/geometry/coordinates/1").asDouble()).isEqualTo(30.2);
         assertThat(geoJson.at("/features/0/properties/recordId").asLong()).isEqualTo(9L);
+        assertThat(geoJson.at("/features/0/properties/altitude").isNumber()).isTrue();
+        assertThat(geoJson.at("/features/0/properties/altitude").asDouble()).isZero();
+        assertThat(geoJson.at("/features/0/properties/speed").isNumber()).isTrue();
+        assertThat(geoJson.at("/features/0/properties/speed").asDouble()).isZero();
     }
 
     private LocationRecord record(String type, String payload) {
@@ -84,5 +91,23 @@ class DeviceTelemetryServiceTest {
         record.setPayloadJson(payload);
         record.setRecordedAt(LocalDateTime.of(2026, 7, 20, 14, 0));
         return record;
+    }
+
+    @Test
+    void cachedLocationPreservesUnknownAltitudeAndSpeed() {
+        when(locationStore.getAll("car-1")).thenReturn(Map.of("location",
+                "{\"lng\":120,\"lat\":30,\"altitude\":null,\"speed\":null}"));
+        ObjectNode snapshot = service.getLatestSnapshot("car-1").orElseThrow();
+        assertThat(snapshot.at("/location/altitude").isNull()).isTrue();
+        assertThat(snapshot.at("/location/speed").isNull()).isTrue();
+    }
+
+    @Test
+    void latestCanBackfillAnImmutablePartialCache() {
+        when(locationStore.getAll("car-1")).thenReturn(Map.of("location", "{\"lng\":120,\"lat\":30}"));
+        when(locationRecordDAO.selectLatestByType("car-1", DeviceTelemetryService.STATUS))
+                .thenReturn(record(DeviceTelemetryService.STATUS, "{\"status\":\"ONLINE\"}"));
+        assertThat(service.getLatestSnapshot("car-1").orElseThrow().at("/status/status").asText())
+                .isEqualTo("ONLINE");
     }
 }

@@ -23,8 +23,8 @@ import java.util.Set;
  * 关键流程：
  *   1) 校验指令类型 & 设备是否在线
  *   2) 落库 command_logs（status=PENDING，回填 id）
- *   3) 通过 DeviceSessionRegistry 取出该设备的 WebSocketSession 发送 JSON
- *   4) 把指令登记到 CommandAckHandler 的 pending 缓存，等待 ACK / 超时
+ *   3) 先登记 ACK 等待，避免设备快速回复时丢失回执
+ *   4) 通过 DeviceSessionRegistry 取出该设备的 WebSocketSession 发送 JSON
  */
 @Service
 @Slf4j
@@ -110,18 +110,20 @@ public class CommandService {
             return CommandResult.fail("设备会话已断开: " + req.getDeviceId());
         }
         try {
-            session.sendMessage(new TextMessage(payload.toString()));
+            // 先登记，避免设备快速回执早于 pending 写入。
+            ackHandler.register(commandId, req.getDeviceId(), cmdLog.getTimeoutSeconds());
+            synchronized (session) {
+                session.sendMessage(new TextMessage(payload.toString()));
+            }
             log.info("[指令下发] commandId={}, deviceId={}, command={}",
                     commandId, req.getDeviceId(), req.getCommand());
-        } catch (IOException e) {
+        } catch (IOException | IllegalStateException e) {
+            ackHandler.cancel(commandId);
             commandLogDAO.markStatus(commandId, CommandLog.STATUS_FAILED,
                     "WebSocket 发送失败: " + e.getMessage());
             log.error("[指令下发失败] commandId={}, error={}", commandId, e.getMessage());
             return CommandResult.fail("WebSocket 发送失败: " + e.getMessage());
         }
-
-        // 6) 登记到 pending 缓存，交由 @Scheduled 做 ACK 超时检测
-        ackHandler.register(commandId, req.getDeviceId(), cmdLog.getTimeoutSeconds());
 
         // 7) 返回（前端可凭 commandId 轮询状态）
         return CommandResult.ok(commandId, req.getDeviceId(), req.getCommand(),

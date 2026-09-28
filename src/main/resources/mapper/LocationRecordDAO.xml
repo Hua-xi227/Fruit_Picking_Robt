@@ -36,15 +36,16 @@
 
     <select id="selectLocationHistory" resultMap="LocationRecordMap">
         SELECT * FROM location_records
-        WHERE device_id = #{deviceId}
-        ORDER BY recorded_at DESC
+        WHERE device_id = #{deviceId} AND record_type = 'LOCATION'
+            AND latitude IS NOT NULL AND longitude IS NOT NULL
+        ORDER BY recorded_at DESC, id DESC
         LIMIT #{limit}
     </select>
 
     <select id="selectLatestByType" resultMap="LocationRecordMap">
         SELECT * FROM location_records
         WHERE device_id = #{deviceId} AND record_type = #{type}
-        ORDER BY recorded_at DESC
+        ORDER BY recorded_at DESC, id DESC
         LIMIT 1
     </select>
 
