@@ -41,10 +41,6 @@ public class CommandAckHandler {
                 LocalDateTime.now().plusSeconds(timeoutSeconds)));
     }
 
-    public void cancel(Long commandId) {
-        pending.remove(commandId);
-    }
-
     /** 小车收到指令后的回执 */
     public void onAck(JsonNode node) {
         if (!node.has("commandId")) {

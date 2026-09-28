@@ -50,7 +50,6 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-        session.setTextMessageSizeLimit(256 * 1024);
         sessions.add(session);
         log.info("客户端连接: id={}, remote={}, 当前在线={}",
                 session.getId(), session.getRemoteAddress(), sessions.size());
@@ -59,7 +58,6 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     @Override
     protected void handleTextMessage(WebSocketSession sender, TextMessage message) {
         String payload = message.getPayload();
-        TextMessage broadcast = message;
         try {
             JsonNode node = objectMapper.readTree(payload);
             if (!node.isObject()) {
@@ -87,22 +85,17 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
                 commandAckHandler.onResult(node);
             }
             dispatch((ObjectNode) node);
-            broadcast = new TextMessage(node.toString());
         } catch (IllegalArgumentException e) {
             log.warn("设备上报参数无效: {}", e.getMessage());
-            return;
         } catch (Exception e) {
             log.error("设备上报解析或存储失败: {}", e.getMessage(), e);
-            return;
         }
 
         for (WebSocketSession session : sessions) {
             if (session.isOpen()) {
                 try {
-                    synchronized (session) {
-                        session.sendMessage(broadcast);
-                    }
-                } catch (IOException | IllegalStateException e) {
+                    session.sendMessage(message);
+                } catch (IOException e) {
                     log.error("WebSocket 发送失败: id={}", session.getId(), e);
                 }
             }
@@ -126,12 +119,6 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     }
 
     public void handleLocation(ObjectNode message) {
-        String coordinateSystem = message.path("coordinateSystem").asText("WGS84")
-                .toUpperCase(Locale.ROOT).replace("-", "").replace("_", "");
-        if (!"WGS84".equals(coordinateSystem) && !"GCJ02".equals(coordinateSystem)) {
-            throw new IllegalArgumentException("coordinateSystem 只支持 WGS84 或 GCJ02");
-        }
-        message.put("coordinateSystem", coordinateSystem);
         double latitude = requiredNumber(message, "lat", "latitude");
         double longitude = requiredNumber(message, "lng", "longitude", "lon");
         if (latitude < -90 || latitude > 90) {
@@ -175,7 +162,6 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
         try {
             telemetryService.save(deviceId, recordType, latitude, longitude,
                     objectMapper.writeValueAsString(payload), recordedAt);
-            message.setAll(payload);
         } catch (IOException e) {
             throw new IllegalStateException("设备消息转为 JSON 失败", e);
         }

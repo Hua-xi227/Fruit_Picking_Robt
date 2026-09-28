@@ -113,7 +113,7 @@ public class DeviceTelemetryService {
     public Optional<ObjectNode> getLatestSnapshot(String deviceId) {
         Map<String, String> payloads;
         try {
-            payloads = new java.util.HashMap<>(locationStore.getAll(deviceId));
+            payloads = locationStore.getAll(deviceId);
         } catch (RuntimeException e) {
             log.warn("读取 Redis 失败，改从 MySQL 查询: deviceId={}", deviceId);
             payloads = new java.util.HashMap<>();
