@@ -36,7 +36,7 @@
 
     <select id="selectLocationHistory" resultMap="LocationRecordMap">
         SELECT * FROM location_records
-        WHERE device_id = #{deviceId}
+        WHERE device_id = #{deviceId} AND record_type='LOCATION'
         ORDER BY recorded_at DESC
         LIMIT #{limit}
     </select>

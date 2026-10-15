@@ -33,13 +33,20 @@ public class LocationStore {
         log.info("从 MySQL 加载历史轨迹");
         List<LocationRecord> records = locationRecordDAO.selectLatestRecords(MAX_SIZE);
         if (records != null && !records.isEmpty()) {
+            int loaded = 0;
             for (LocationRecord record : records) {
-                String json = record.getRawData();
+                // ★ 修复：save() 只写 payload_json，raw_data 是老字段通常为空。
+                //   原来只读 raw_data，导致启动时一条都加载不进来（history 恒为空）。
+                String json = record.getPayloadJson();
+                if (json == null || json.isEmpty()) {
+                    json = record.getRawData();
+                }
                 if (json != null && !json.isEmpty()) {
                     history.add(json);
+                    loaded++;
                 }
             }
-            log.info("从 MySQL 加载了 {} 条历史轨迹", records.size());
+            log.info("从 MySQL 加载了 {} 条历史轨迹（共 {} 条记录）", loaded, records.size());
         }
     }
 

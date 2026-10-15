@@ -97,7 +97,37 @@ public class DeviceSessionRegistry {
         return sessions.keySet();
     }
 
-    /** 移除某个设备会话（连接关闭时调用） */
+    /**
+     * 移除某个设备会话（连接关闭时调用）
+     *
+     * ★ 为什么必须带 session 参数：
+     *   sessions 是 deviceId -> 单个会话 的映射。如果真车和模拟器（或两个页面）
+     *   用了同一个 deviceId，后连的会顶掉先连的。此时若其中一端断开，
+     *   无条件的 remove(deviceId) 会把**另一端正在使用的会话一起注销掉** ——
+     *   表现为"我这边明明还连着，指令却突然下不来了"。
+     *
+     *   ConcurrentMap.remove(key, value) 是原子的条件删除：只有当前登记的会话
+     *   确实是这个 session 时才移除，不匹配就什么都不做，误伤就不会发生。
+     *
+     * @return 是否真的移除了
+     */
+    public boolean unregister(String deviceId, WebSocketSession session) {
+        if (deviceId == null || session == null) {
+            return false;
+        }
+        if (!sessions.remove(deviceId, session)) {
+            log.debug("[会话注销] 跳过：deviceId={} 当前登记的会话不是本连接", deviceId);
+            return false;
+        }
+        lastHeartbeatAt.remove(deviceId);
+        log.info("[会话注销] deviceId={}, 当前在线={}", deviceId, sessions.size());
+        return true;
+    }
+
+    /**
+     * 强制移除某个设备的会话（不带 session 校验）。
+     * 仅用于心跳超时清理这类"确定要踢掉"的场景；连接关闭回调请用上面的重载。
+     */
     public void unregister(String deviceId) {
         if (deviceId == null) {
             return;

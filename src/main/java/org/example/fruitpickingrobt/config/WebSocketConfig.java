@@ -1,34 +1,55 @@
 package org.example.fruitpickingrobt.config;
 
-import org.example.fruitpickingrobt.service.control.CommandAckHandler;
 import org.example.fruitpickingrobt.websocket.DeviceSessionRegistry;
+import org.example.fruitpickingrobt.websocket.FrontendWebSocketHandler;
 import org.example.fruitpickingrobt.websocket.LocationWebSocketHandler;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
 import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
 
+/**
+ * WebSocket 端点注册。
+ *   /ws/location   设备专用（小车 / 模拟器）
+ *                  上行：location / status / armParams / heartbeat / ack / result / chassis(50Hz)
+ *                  下行：command（任务级指令）+ motion（底盘目标速度）
+ *
+ *   /ws/frontend   浏览器专用
+ *                  上行：subscribe / unsubscribe / motion / action
+ *                  下行：20Hz 遥测推送 + subscribed 回执
+ *
+ * 为什么删掉原来的 /ws/chassis：
+ *   它和 /ws/location 共用同一个 DeviceSessionRegistry，两个端点各注册一次会话，
+ *   同一个 deviceId 会互相顶替。现在底盘逻辑已并入 /ws/location，
+ *   一个设备只需连一条连接，顶替问题从根上消失。
+ *   （车载脚本 scout_bridge.py 的连接地址已同步改为 /ws/location）
+ */
 @Configuration
 @EnableWebSocket
 public class WebSocketConfig implements WebSocketConfigurer {
 
     private final LocationWebSocketHandler locationHandler;
+    private final FrontendWebSocketHandler frontendHandler;
     private final DeviceSessionRegistry deviceSessionRegistry;
-    private final CommandAckHandler commandAckHandler;
 
     public WebSocketConfig(LocationWebSocketHandler locationHandler,
-                           DeviceSessionRegistry deviceSessionRegistry,
-                           CommandAckHandler commandAckHandler) {
+                           FrontendWebSocketHandler frontendHandler,
+                           DeviceSessionRegistry deviceSessionRegistry) {
         this.locationHandler = locationHandler;
+        this.frontendHandler = frontendHandler;
         this.deviceSessionRegistry = deviceSessionRegistry;
-        this.commandAckHandler = commandAckHandler;
     }
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         // 任务2: 注册端点，监听 /ws/location
         // 任务6: setAllowedOrigins("*") 允许跨域
+        // 重点二改造：这是唯一的设备端点，底盘 50Hz 遥测也走这里（type=chassis）
         registry.addHandler(locationHandler, "/ws/location")
+                .setAllowedOrigins("*");
+
+        // 前端专用（订阅 20Hz 推送 + 下发运动指令）
+        registry.addHandler(frontendHandler, "/ws/frontend")
                 .setAllowedOrigins("*");
     }
 }

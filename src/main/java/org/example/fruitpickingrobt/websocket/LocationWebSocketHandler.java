@@ -3,9 +3,10 @@ package org.example.fruitpickingrobt.websocket;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.example.fruitpickingrobt.dto.chassis.ChassisTelemetryDTO;
+import org.example.fruitpickingrobt.service.chassis.ChassisTelemetryService;
 import org.example.fruitpickingrobt.service.control.CommandAckHandler;
 import org.example.fruitpickingrobt.service.telemetry.DeviceTelemetryService;
-import org.example.fruitpickingrobt.websocket.DeviceSessionRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -24,12 +25,32 @@ import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 
-/** 接收设备上报，处理后端 A 的三类数据，并保留原有 WebSocket 广播。 */
+/**
+ * 统一设备端点 /ws/location：接收设备上行数据，并负责指令下行。
+ *
+ * 原来这里只处理三类低频数据（location / status / armParams），
+ * 现在新增底盘 50Hz 遥测（type=chassis），同时修掉三个历史问题：
+ *
+ * 1) 【新增】chassis 快速路径
+ *    底盘帧必须在 dispatch() 的「类型猜测」之前拦截。
+ *    因为 messageType() 里有兜底逻辑：没写 type 时，只要带 lat+lng 就判成 location。
+ *    而底盘帧恰好带 latitude/longitude，不拦截就会被误判、被经纬度校验卡住、静默丢弃。
+ *
+ * 2) 【修复】删掉无条件广播
+ *    旧代码在方法末尾把每条上行消息原样广播给所有连接（**含发送者自己**）。
+ *    1Hz 时无所谓，50Hz 时设备每秒会收回自己 50 条包，嵌入式板子直接被打满。
+ *    现在改成：只推给「订阅了该设备的前端」（走 /ws/frontend），设备之间不再互推。
+ *
+ * 3) 【修复】错误不再静默
+ *    旧代码 catch 后只打日志，设备端完全不知道自己发的消息被拒了。
+ *    现在会给设备回一条 {"type":"error","message":"..."}，调试时能立刻定位。
+ */
 @Component
 public class LocationWebSocketHandler extends TextWebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(LocationWebSocketHandler.class);
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 
+    /** 仅用于统计在线连接数，不再用于广播 */
     private final CopyOnWriteArraySet<WebSocketSession> sessions = new CopyOnWriteArraySet<>();
     /** sessionId -> deviceId，用于连接关闭时清理注册表（下行控制用） */
     private final ConcurrentHashMap<String, String> sessionDeviceIds = new ConcurrentHashMap<>();
@@ -37,15 +58,21 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final DeviceSessionRegistry deviceSessionRegistry;
     private final CommandAckHandler commandAckHandler;
+    private final ChassisTelemetryService chassisTelemetryService;
+    private final FrontendSessionRegistry frontendRegistry;
 
     public LocationWebSocketHandler(DeviceTelemetryService telemetryService,
                                     ObjectMapper objectMapper,
                                     DeviceSessionRegistry deviceSessionRegistry,
-                                    CommandAckHandler commandAckHandler) {
+                                    CommandAckHandler commandAckHandler,
+                                    ChassisTelemetryService chassisTelemetryService,
+                                    FrontendSessionRegistry frontendRegistry) {
         this.telemetryService = telemetryService;
         this.objectMapper = objectMapper;
         this.deviceSessionRegistry = deviceSessionRegistry;
         this.commandAckHandler = commandAckHandler;
+        this.chassisTelemetryService = chassisTelemetryService;
+        this.frontendRegistry = frontendRegistry;
     }
 
     @Override
@@ -58,14 +85,21 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     @Override
     protected void handleTextMessage(WebSocketSession sender, TextMessage message) {
         String payload = message.getPayload();
+        String deviceId = null;
         try {
             JsonNode node = objectMapper.readTree(payload);
             if (!node.isObject()) {
                 throw new IllegalArgumentException("消息必须是 JSON 对象");
             }
             String type = node.path("type").asText("");
+
+            // ★ 底盘遥测 50Hz 快速路径：必须放在 dispatch() 之前
+            if ("chassis".equalsIgnoreCase(type)) {
+                handleChassis(sender, (ObjectNode) node);
+                return;
+            }
+
             // —— 下行控制：登记设备会话，指令需要精准下发到具体设备 ——
-            String deviceId = null;
             try {
                 deviceId = deviceId((ObjectNode) node);
                 deviceSessionRegistry.register(deviceId, sender);
@@ -73,6 +107,7 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
             } catch (IllegalArgumentException ignored) {
                 // 没有合法 deviceId 的消息（如纯 ack / result）不登记
             }
+
             // —— 心跳保活：任何带 deviceId 的合法消息都刷新存活时间 ——
             if ("heartbeat".equalsIgnoreCase(type) && deviceId != null) {
                 deviceSessionRegistry.recordHeartbeat(deviceId);
@@ -85,20 +120,55 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
                 commandAckHandler.onResult(node);
             }
             dispatch((ObjectNode) node);
+
+            // 低频数据（位置/状态/机械臂/视频帧）落库成功后，转发给订阅了该设备的前端。
+            // 替代原来的无条件广播：设备之间不再互推，设备也不会收到自己发的包。
+            if (deviceId != null) {
+                frontendRegistry.broadcast(deviceId, payload);
+            }
         } catch (IllegalArgumentException e) {
             log.warn("设备上报参数无效: {}", e.getMessage());
+            sendError(sender, e.getMessage());
         } catch (Exception e) {
             log.error("设备上报解析或存储失败: {}", e.getMessage(), e);
+            sendError(sender, "消息处理失败: " + e.getMessage());
         }
+    }
 
-        for (WebSocketSession session : sessions) {
-            if (session.isOpen()) {
-                try {
-                    session.sendMessage(message);
-                } catch (IOException e) {
-                    log.error("WebSocket 发送失败: id={}", session.getId(), e);
-                }
-            }
+    /**
+     * 底盘遥测帧（50Hz）—— 这是最高频的路径，必须快。
+     * 只做三件事：登记会话、刷新心跳、交给 ChassisTelemetryService。
+     * 它内部会更新内存快照 + Redis 最新态 + 采样入队，真正的写库由定时线程批量完成。
+     */
+    private void handleChassis(WebSocketSession sender, ObjectNode node) throws Exception {
+        ChassisTelemetryDTO dto = objectMapper.treeToValue(node, ChassisTelemetryDTO.class);
+        String deviceId = dto.getDeviceId();
+        if (deviceId == null || deviceId.isBlank()) {
+            throw new IllegalArgumentException("底盘帧缺少 deviceId");
+        }
+        // 首次收到数据也顺便登记会话（有的小车可能不发 register 就直接推数据）
+        if (!sessionDeviceIds.containsKey(sender.getId())) {
+            deviceSessionRegistry.register(deviceId, sender);
+            sessionDeviceIds.put(sender.getId(), deviceId);
+        }
+        // 50Hz 遥测本身就证明设备活着，不用再单独发心跳
+        deviceSessionRegistry.recordHeartbeat(deviceId);
+        chassisTelemetryService.onTelemetry(dto);
+    }
+
+    /** 把错误回给设备端，避免"发了数据却查不到、只能翻服务端日志"的尴尬 */
+    private void sendError(WebSocketSession session, String msg) {
+        if (session == null || !session.isOpen()) {
+            return;
+        }
+        try {
+            ObjectNode n = objectMapper.createObjectNode();
+            n.put("type", "error");
+            n.put("message", msg);
+            n.put("ts", System.currentTimeMillis());
+            session.sendMessage(new TextMessage(n.toString()));
+        } catch (IOException ignored) {
+            // 连接已断，无需处理
         }
     }
 
@@ -114,7 +184,7 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
                 handleArmParams(message);
                 break;
             default:
-                // 其他消息只广播。
+                // 其他消息只落库外转发，不额外处理。
         }
     }
 
@@ -259,10 +329,13 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         sessions.remove(session);
-        // —— 下行控制：清理设备会话登记 ——
         String deviceId = sessionDeviceIds.remove(session.getId());
         if (deviceId != null) {
-            deviceSessionRegistry.unregister(deviceId);
+            // ★ 必须带 session 做条件移除：只有登记的会话确实是当前这个时才注销，
+            //   否则真车和模拟器共用 deviceId 时，一端断线会把另一端一起注销掉。
+            deviceSessionRegistry.unregister(deviceId, session);
+            // 清理内存快照，避免推送线程继续推已离线设备的陈旧数据
+            chassisTelemetryService.evict(deviceId);
         }
         log.info("客户端断开: id={}, 当前在线={}", session.getId(), sessions.size());
     }
