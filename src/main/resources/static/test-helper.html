@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket 测试助手</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+        h1 { color: #4caf50; margin-bottom: 16px; }
+        .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .full { grid-column: 1 / -1; }
+        .card {
+            background: #2a2a2a;
+            border-radius: 8px;
+            padding: 16px;
+            border: 1px solid #3a3a3a;
+        }
+        .card h2 { color: #ffd700; font-size: 16px; margin-bottom: 12px; }
+        .row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        input, select {
+            background: #1a1a1a;
+            border: 1px solid #3a3a3a;
+            color: #fff;
+            padding: 6px 10px;
+            border-radius: 4px;
+            flex: 1;
+        }
+        button {
+            padding: 8px 16px;
+            background: #4caf50;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover { background: #43a047; }
+        button.danger { background: #f44336; }
+        button.danger:hover { background: #d32f2f; }
+        .status {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+            background: #555;
+        }
+        .status.online { background: #4caf50; }
+        #log {
+            background: #111;
+            border-radius: 4px;
+            padding: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        #log .success { color: #4caf50; }
+        #log .error { color: #f44336; }
+        #log .info { color: #90caf9; }
+        #log .recv { color: #ffb74d; }
+        #map {
+            width: 100%;
+            height: 400px;
+            background: #111;
+            border-radius: 4px;
+            position: relative;
+        }
+        #mapCanvas { width: 100%; height: 100%; }
+        #videoStream {
+            width: 100%;
+            max-width: 480px;
+            background: #000;
+            border-radius: 4px;
+            min-height: 200px;
+        }
+        .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 13px; }
+        .info-grid div { background: #1a1a1a; padding: 6px 10px; border-radius: 4px; }
+        .info-grid span { color: #ffd700; }
+    </style>
+</head>
+<body>
+<h1>🔧 采摘机器人 WebSocket 测试助手</h1>
+
+<div class="container">
+    <!-- 连接配置 -->
+    <div class="card full">
+        <h2>1. 连接配置</h2>
+        <div class="row">
+            <label>后端地址:</label>
+            <input type="text" id="serverUrl" placeholder="http://192.168.1.100:8082">
+            <button id="btnConnect">连接</button>
+            <button id="btnDisconnect" class="danger">断开</button>
+            <span class="status" id="connStatus">未连接</span>
+        </div>
+        <div class="row">
+            <button id="btnLoadHistory">加载历史轨迹</button>
+            <button id="btnGetLatest">获取最新位置</button>
+            <button id="btnClearLog">清空日志</button>
+        </div>
+    </div>
+
+    <!-- 实时信息 -->
+    <div class="card">
+        <h2>2. 最新位置信息</h2>
+        <div class="info-grid">
+            <div>设备ID: <span id="infoDeviceId">--</span></div>
+            <div>时间: <span id="infoTime">--</span></div>
+            <div>经度: <span id="infoLng">--</span></div>
+            <div>纬度: <span id="infoLat">--</span></div>
+            <div>方向角: <span id="infoBearing">--</span>°</div>
+            <div>轨迹点数: <span id="infoPointCount">0</span></div>
+        </div>
+    </div>
+
+    <!-- 视频预览 -->
+    <div class="card">
+        <h2>3. 视频流预览</h2>
+        <img id="videoStream" alt="等待视频流...">
+        <div class="row" style="margin-top: 8px;">
+            <button id="btnStartVideo">开启视频</button>
+            <button id="btnStopVideo" class="danger">关闭视频</button>
+        </div>
+    </div>
+
+    <!-- 轨迹地图 -->
+    <div class="card full">
+        <h2>4. 轨迹地图（简易可视化）</h2>
+        <div id="map">
+            <canvas id="mapCanvas"></canvas>
+        </div>
+    </div>
+
+    <!-- 通信日志 -->
+    <div class="card full">
+        <h2>5. 通信日志</h2>
+        <div id="log"></div>
+    </div>
+</div>
+
+<script>
+    // 全局变量
+    let ws = null;
+    let isConnected = false;
+    const points = []; // 轨迹点数组
+    const MAX_POINTS = 200;
+    let videoTimer = null;
+
+    // 工具函数
+    function log(msg, type = 'info') {
+        const logEl = document.getElementById('log');
+        const time = new Date().toLocaleTimeString();
+        const div = document.createElement('div');
+        div.className = type;
+        div.textContent = `[${time}] ${msg}`;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function getServerUrl() {
+        let url = document.getElementById('serverUrl').value.trim();
+        if (!url) {
+            url = `${location.protocol}//${location.hostname}:8082`;
+        }
+        return url.replace(/\/$/, '');
+    }
+
+    function setConnStatus(online) {
+        const el = document.getElementById('connStatus');
+        el.textContent = online ? '已连接' : '未连接';
+        el.className = 'status' + (online ? ' online' : '');
+        isConnected = online;
+    }
+
+    // 1. WebSocket 连接
+    document.getElementById('btnConnect').onclick = function() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            log('已经处于连接状态', 'error');
+            return;
+        }
+        const baseUrl = getServerUrl().replace(/^http/, 'ws');
+        const wsUrl = `${baseUrl}/ws/location`;
+        log(`正在连接: ${wsUrl}`);
+        try {
+            ws = new WebSocket(wsUrl);
+            ws.onopen = () => {
+                setConnStatus(true);
+                log('WebSocket 连接成功 ✓', 'success');
+            };
+            ws.onclose = () => {
+                setConnStatus(false);
+                log('WebSocket 已断开', 'info');
+            };
+            ws.onerror = (e) => log('WebSocket 错误', 'error');
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.lat && data.lng) {
+                        addPoint(data);
+                        updateInfo(data);
+                        drawMap();
+                        log(`收到位置: lat=${data.lat.toFixed(6)}, lng=${data.lng.toFixed(6)}`, 'recv');
+                    } else {
+                        log(`收到非位置消息: ${event.data.substring(0, 80)}`, 'recv');
+                    }
+                } catch (e) {
+                    log(`收到消息: ${event.data.substring(0, 80)}`, 'recv');
+                }
+            };
+        } catch (e) {
+            log('连接失败: ' + e.message, 'error');
+        }
+    };
+
+    document.getElementById('btnDisconnect').onclick = function() {
+        if (ws) {
+            ws.close();
+            ws = null;
+            log('已主动断开', 'info');
+        }
+    };
+
+    // 2. 加载历史轨迹
+    document.getElementById('btnLoadHistory').onclick = function() {
+        const url = `${getServerUrl()}/api/history`;
+        log(`GET ${url}`);
+        fetch(url)
+            .then(r => r.json())
+            .then(res => {
+                if (res.success === 200 && res.data) {
+                    points.length = 0;
+                    res.data.forEach(p => {
+                        if (p.lat && p.lng) points.push({ lat: p.lat, lng: p.lng });
+                    });
+                    log(`加载了 ${points.length} 个历史轨迹点`, 'success');
+                    drawMap();
+                    updateInfo({});
+                } else {
+                    log('历史数据格式异常: ' + JSON.stringify(res).substring(0, 100), 'error');
+                }
+            })
+            .catch(e => log('加载历史失败: ' + e.message, 'error'));
+    };
+
+    document.getElementById('btnGetLatest').onclick = function() {
+        const url = `${getServerUrl()}/api/latest`;
+        log(`GET ${url}`);
+        fetch(url)
+            .then(r => {
+                if (r.status === 204) {
+                    log('当前无最新位置数据', 'info');
+                    return null;
+                }
+                return r.json();
+            })
+            .then(data => {
+                if (data) {
+                    log('最新位置: ' + JSON.stringify(data), 'success');
+                    updateInfo(data);
+                }
+            })
+            .catch(e => log('获取最新位置失败: ' + e.message, 'error'));
+    };
+
+    document.getElementById('btnClearLog').onclick = function() {
+        document.getElementById('log').innerHTML = '';
+    };
+
+    // 3. 信息显示
+    function addPoint(data) {
+        points.push(data);
+        if (points.length > MAX_POINTS) {
+            points.shift();
+        }
+    }
+
+    function updateInfo(data) {
+        if (data.deviceId) document.getElementById('infoDeviceId').textContent = data.deviceId;
+        if (data.lng != null) document.getElementById('infoLng').textContent = data.lng.toFixed(6);
+        if (data.lat != null) document.getElementById('infoLat').textContent = data.lat.toFixed(6);
+        if (data.bearing != null) document.getElementById('infoBearing').textContent = data.bearing.toFixed(1);
+        if (data.timestamp) {
+            document.getElementById('infoTime').textContent = new Date(data.timestamp).toLocaleTimeString();
+        } else {
+            document.getElementById('infoTime').textContent = new Date().toLocaleTimeString();
+        }
+        document.getElementById('infoPointCount').textContent = points.length;
+    }
+
+    // 4. 简易地图绘制
+    function drawMap() {
+        const canvas = document.getElementById('mapCanvas');
+        const container = document.getElementById('map');
+        canvas.width = container.clientWidth;
+        canvas.height = container.clientHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#111';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (points.length === 0) {
+            ctx.fillStyle = '#666';
+            ctx.font = '14px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('暂无轨迹数据', canvas.width / 2, canvas.height / 2);
+            return;
+        }
+
+        // 计算坐标范围（自动适配）
+        let minLng = points[0].lng, maxLng = points[0].lng;
+        let minLat = points[0].lat, maxLat = points[0].lat;
+        points.forEach(p => {
+            minLng = Math.min(minLng, p.lng);
+            maxLng = Math.max(maxLng, p.lng);
+            minLat = Math.min(minLat, p.lat);
+            maxLat = Math.max(maxLat, p.lat);
+        });
+        // 留点边距
+        const lngRange = (maxLng - minLng) || 0.001;
+        const latRange = (maxLat - minLat) || 0.001;
+        const padding = 0.2;
+        minLng -= lngRange * padding;
+        maxLng += lngRange * padding;
+        minLat -= latRange * padding;
+        maxLat += latRange * padding;
+
+        const padding2 = 20;
+        const w = canvas.width - padding2 * 2;
+        const h = canvas.height - padding2 * 2;
+
+        // 画网格
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 0.5;
+        for (let i = 0; i <= 10; i++) {
+            ctx.beginPath();
+            ctx.moveTo(padding2 + (w / 10) * i, padding2);
+            ctx.lineTo(padding2 + (w / 10) * i, padding2 + h);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(padding2, padding2 + (h / 10) * i);
+            ctx.lineTo(padding2 + w, padding2 + (h / 10) * i);
+            ctx.stroke();
+        }
+
+        // 工具：经纬度转屏幕坐标
+        function toScreen(lng, lat) {
+            const x = padding2 + ((lng - minLng) / (maxLng - minLng)) * w;
+            const y = padding2 + h - ((lat - minLat) / (maxLat - minLat)) * h;
+            return { x, y };
+        }
+
+        // 画轨迹线
+        ctx.strokeStyle = '#4caf50';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        points.forEach((p, i) => {
+            const { x, y } = toScreen(p.lng, p.lat);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        // 画点
+        points.forEach((p, i) => {
+            const { x, y } = toScreen(p.lng, p.lat);
+            ctx.fillStyle = i === points.length - 1 ? '#ff5722' : '#8bc34a';
+            ctx.beginPath();
+            ctx.arc(x, y, i === points.length - 1 ? 6 : 3, 0, Math.PI * 2);
+            ctx.fill();
+        });
+
+        // 显示最新点
+        const last = points[points.length - 1];
+        if (last.bearing != null) {
+            const { x, y } = toScreen(last.lng, last.lat);
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(last.bearing * Math.PI / 180);
+            ctx.fillStyle = '#ffeb3b';
+            ctx.beginPath();
+            ctx.moveTo(10, 0);
+            ctx.lineTo(-5, -5);
+            ctx.lineTo(-5, 5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+
+    // 5. 视频流控制
+    document.getElementById('btnStartVideo').onclick = function() {
+        const img = document.getElementById('videoStream');
+        img.src = `${getServerUrl()}/api/video/stream`;
+        log('开始接收视频流', 'success');
+    };
+
+    document.getElementById('btnStopVideo').onclick = function() {
+        const img = document.getElementById('videoStream');
+        img.src = '';
+        log('已停止视频流', 'info');
+    };
+
+    // 初始化
+    if (location.hostname) {
+        document.getElementById('serverUrl').value = `${location.protocol}//${location.hostname}:8082`;
+    }
+    log('测试助手已加载', 'info');
+    log('使用提示：', 'info');
+    log('  1. 输入后端地址（默认已填当前主机）', 'info');
+    log('  2. 点击"连接"建立 WebSocket', 'info');
+    log('  3. 用手机打开 simulator.html 模拟小车发送数据', 'info');
+    log('  4. 点击"加载历史轨迹"恢复路径', 'info');
+    log('  5. 点击"开启视频"接收小车摄像头画面', 'info');
+    window.addEventListener('resize', drawMap);
+</script>
+</body>
+</html>
