@@ -73,12 +73,14 @@
             position: relative;
         }
         #mapCanvas { width: 100%; height: 100%; }
-        #videoStream {
+        #videoCanvas {
             width: 100%;
-            max-width: 480px;
+            max-width: 640px;
             background: #000;
             border-radius: 4px;
-            min-height: 200px;
+            min-height: 240px;
+            display: block;
+            image-rendering: auto;
         }
         .info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 13px; }
         .info-grid div { background: #1a1a1a; padding: 6px 10px; border-radius: 4px; }
@@ -122,7 +124,8 @@
     <!-- 视频预览 -->
     <div class="card">
         <h2>3. 视频流预览</h2>
-        <img id="videoStream" alt="等待视频流...">
+        <video id="videoPlayer" autoplay playsinline muted style="width:100%;max-width:640px;background:#000;border-radius:4px;min-height:240px;"></video>
+        <canvas id="videoCanvas" width="640" height="480" style="display:none;"></canvas>
         <div class="row" style="margin-top: 8px;">
             <button id="btnStartVideo">开启视频</button>
             <button id="btnStopVideo" class="danger">关闭视频</button>
@@ -171,6 +174,11 @@
         return url.replace(/\/$/, '');
     }
 
+    // 与 simulator.html 保持同一个设备ID
+    function getDeviceId() {
+        return 'car-001';
+    }
+
     function setConnStatus(online) {
         const el = document.getElementById('connStatus');
         el.textContent = online ? '已连接' : '未连接';
@@ -185,13 +193,19 @@
             return;
         }
         const baseUrl = getServerUrl().replace(/^http/, 'ws');
-        const wsUrl = `${baseUrl}/ws/location`;
+        // 作为查看者，必须连 /ws/frontend，订阅设备后才能收到广播
+        const wsUrl = `${baseUrl}/ws/frontend`;
         log(`正在连接: ${wsUrl}`);
         try {
             ws = new WebSocket(wsUrl);
+            ws.binaryType = 'arraybuffer';
             ws.onopen = () => {
                 setConnStatus(true);
                 log('WebSocket 连接成功 ✓', 'success');
+                // 连接成功后立即订阅设备，否则收不到任何推送
+                const deviceId = getDeviceId();
+                ws.send(JSON.stringify({ type: 'subscribe', deviceId: deviceId }));
+                log(`已订阅设备: ${deviceId}`, 'success');
             };
             ws.onclose = () => {
                 setConnStatus(false);
@@ -199,19 +213,29 @@
             };
             ws.onerror = (e) => log('WebSocket 错误', 'error');
             ws.onmessage = (event) => {
+                if (event.data instanceof ArrayBuffer) {
+                    handleBinaryVideo(event.data);
+                    return;
+                }
                 try {
                     const data = JSON.parse(event.data);
-                    if (data.lat && data.lng) {
-                        addPoint(data);
+                    const la = data.lat ?? data.latitude;
+                    const lo = data.lng ?? data.longitude;
+                    if (data.type === 'subscribed') {
+                        log(`订阅成功: deviceId=${data.deviceId}`, 'success');
+                    } else if (la != null && lo != null) {
+                        addPoint({ lat: la, lng: lo, bearing: data.bearing });
                         updateInfo(data);
                         drawMap();
-                        log(`收到位置: lat=${data.lat.toFixed(6)}, lng=${data.lng.toFixed(6)}`, 'recv');
-                    } else {
-                        log(`收到非位置消息: ${event.data.substring(0, 80)}`, 'recv');
+                    } else if (data.type === 'video_frame') {
+                        if (data.image) {
+                            const base64 = data.image.includes(',') ? data.image.split(',')[1] : data.image;
+                            fetch(`data:image/jpeg;base64,${base64}`)
+                                .then(r => r.blob())
+                                .then(b => renderJpegBlob(b));
+                        }
                     }
-                } catch (e) {
-                    log(`收到消息: ${event.data.substring(0, 80)}`, 'recv');
-                }
+                } catch (e) {}
             };
         } catch (e) {
             log('连接失败: ' + e.message, 'error');
@@ -228,28 +252,37 @@
 
     // 2. 加载历史轨迹
     document.getElementById('btnLoadHistory').onclick = function() {
-        const url = `${getServerUrl()}/api/history`;
+        const deviceId = getDeviceId();
+        const url = `${getServerUrl()}/api/devices/${deviceId}/history?format=coordinates`;
         log(`GET ${url}`);
         fetch(url)
-            .then(r => r.json())
-            .then(res => {
-                if (res.success === 200 && res.data) {
-                    points.length = 0;
-                    res.data.forEach(p => {
-                        if (p.lat && p.lng) points.push({ lat: p.lat, lng: p.lng });
-                    });
-                    log(`加载了 ${points.length} 个历史轨迹点`, 'success');
-                    drawMap();
-                    updateInfo({});
-                } else {
-                    log('历史数据格式异常: ' + JSON.stringify(res).substring(0, 100), 'error');
+            .then(r => {
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return r.json();
+            })
+            .then(list => {
+                if (!Array.isArray(list)) {
+                    log('历史数据格式异常: ' + JSON.stringify(list).substring(0, 100), 'error');
+                    return;
                 }
+                points.length = 0;
+                // 后端 format=coordinates 返回 [[经度, 纬度], ...]
+                list.forEach(pair => {
+                    const lng = pair[0], lat = pair[1];
+                    if (typeof lng === 'number' && typeof lat === 'number') {
+                        points.push({ lat: lat, lng: lng });
+                    }
+                });
+                log(`加载了 ${points.length} 个历史轨迹点`, 'success');
+                drawMap();
+                updateInfo({});
             })
             .catch(e => log('加载历史失败: ' + e.message, 'error'));
     };
 
     document.getElementById('btnGetLatest').onclick = function() {
-        const url = `${getServerUrl()}/api/latest`;
+        const deviceId = getDeviceId();
+        const url = `${getServerUrl()}/api/devices/${deviceId}/latest`;
         log(`GET ${url}`);
         fetch(url)
             .then(r => {
@@ -257,12 +290,21 @@
                     log('当前无最新位置数据', 'info');
                     return null;
                 }
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 return r.json();
             })
             .then(data => {
                 if (data) {
-                    log('最新位置: ' + JSON.stringify(data), 'success');
-                    updateInfo(data);
+                    log('最新位置: ' + JSON.stringify(data).substring(0, 120), 'success');
+                    // 后端 latest 把位置放在 location 字段下，这里做兼容
+                    const loc = data.location || data;
+                    updateInfo({
+                        deviceId: data.deviceId || deviceId,
+                        lat: loc.latitude ?? loc.lat,
+                        lng: loc.longitude ?? loc.lng,
+                        bearing: loc.bearing,
+                        timestamp: loc.recordedAt || loc.timestamp
+                    });
                 }
             })
             .catch(e => log('获取最新位置失败: ' + e.message, 'error'));
@@ -282,11 +324,14 @@
 
     function updateInfo(data) {
         if (data.deviceId) document.getElementById('infoDeviceId').textContent = data.deviceId;
-        if (data.lng != null) document.getElementById('infoLng').textContent = data.lng.toFixed(6);
-        if (data.lat != null) document.getElementById('infoLat').textContent = data.lat.toFixed(6);
-        if (data.bearing != null) document.getElementById('infoBearing').textContent = data.bearing.toFixed(1);
-        if (data.timestamp) {
-            document.getElementById('infoTime').textContent = new Date(data.timestamp).toLocaleTimeString();
+        const lo = data.lng ?? data.longitude;
+        const la = data.lat ?? data.latitude;
+        if (lo != null) document.getElementById('infoLng').textContent = Number(lo).toFixed(6);
+        if (la != null) document.getElementById('infoLat').textContent = Number(la).toFixed(6);
+        if (data.bearing != null) document.getElementById('infoBearing').textContent = Number(data.bearing).toFixed(1);
+        const ts = data.timestamp || data.recordedAt;
+        if (ts) {
+            document.getElementById('infoTime').textContent = new Date(ts).toLocaleTimeString();
         } else {
             document.getElementById('infoTime').textContent = new Date().toLocaleTimeString();
         }
@@ -393,16 +438,179 @@
     }
 
     // 5. 视频流控制
+    let videoEnabled = true;
+    const videoCanvas = document.getElementById('videoCanvas');
+    const videoCtx = videoCanvas.getContext('2d');
+    const videoPlayer = document.getElementById('videoPlayer');
+
+    // MSE（MediaSource Extensions）播放 WebM 视频流——硬件解码，跟摄像头同帧率
+    let mediaSource = null;
+    let sourceBuffer = null;
+    let mimeType = 'video/webm;codecs=vp9';
+    let pendingChunks = [];
+
+    function initMediaSource() {
+        if (mediaSource) return;
+        if (!window.MediaSource) {
+            log('浏览器不支持 MSE，将用 canvas 渲染 JPEG 帧', 'warn');
+            return;
+        }
+        // 探测支持的编码
+        if (!MediaSource.isTypeSupported(mimeType)) mimeType = 'video/webm;codecs=vp8';
+        if (!MediaSource.isTypeSupported(mimeType)) mimeType = 'video/webm';
+
+        mediaSource = new MediaSource();
+        videoPlayer.src = URL.createObjectURL(mediaSource);
+        mediaSource.addEventListener('sourceopen', () => {
+            try {
+                sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+                // sequence 模式：MSE 忽略媒体内部时间戳，按追加顺序连续排列。
+                // 直播流必须用 sequence，否则 MediaRecorder 每秒重启产生的多段会
+                // 形成多个 buffered range，导致 behind 计算失真、延迟无限累积。
+                sourceBuffer.mode = 'sequence';
+                sourceBuffer.addEventListener('updateend', drainPendingChunks);
+                sourceBuffer.addEventListener('error', (e) => {
+                    log('MSE SourceBuffer 错误: ' + (sourceBuffer.error?.message || '未知'), 'error');
+                });
+                log('MSE 已就绪: ' + mimeType, 'success');
+                // ★ 关键修复：sourceopen 是异步的，第一块（含 WebM init segment）
+                //   可能在此之前已到达并存入 pendingChunks。必须立即排空，
+                //   否则 init segment 丢失，后续媒体段无法解码 → 永久黑屏。
+                drainPendingChunks();
+            } catch (e) {
+                log('MSE SourceBuffer 创建失败: ' + e.message, 'error');
+            }
+        });
+        mediaSource.addEventListener('error', (e) => {
+            log('MSE 错误: ' + (mediaSource.error?.message || '未知'), 'error');
+        });
+        videoPlayer.addEventListener('error', () => {
+            log('video 元素播放错误: ' + (videoPlayer.error?.message || '未知'), 'error');
+        });
+        videoPlayer.addEventListener('loadeddata', () => {
+            log('视频首帧已加载，开始播放', 'success');
+            videoPlayer.play().catch(() => {});
+        });
+    }
+
+    function drainPendingChunks() {
+        if (!sourceBuffer || sourceBuffer.updating) return;
+        while (pendingChunks.length > 0 && !sourceBuffer.updating) {
+            const chunk = pendingChunks.shift();
+            try { sourceBuffer.appendBuffer(chunk); } catch (e) {}
+        }
+    }
+
+    // 低延迟控制：每 50ms 检测一次，紧贴直播边缘
+    //   - 延迟 > 200ms：直接 seek 到直播边缘（保留 50ms 缓冲防卡顿）
+    //   - 延迟 100~200ms：加速 2x 平滑追赶
+    //   - 延迟 < 100ms：正常速度
+    //   - 停滞检测：currentTime 150ms 不前进 → 丢帧冻结，seek 恢复
+    let lastCurrentTime = 0;
+    let lastAdvanceTime = Date.now();
+
+    setInterval(() => {
+        if (!videoEnabled || !videoPlayer || !sourceBuffer || videoPlayer.buffered.length === 0) return;
+        if (videoPlayer.paused) videoPlayer.play().catch(() => {});
+
+        const end = videoPlayer.buffered.end(videoPlayer.buffered.length - 1);
+        const current = videoPlayer.currentTime;
+        const behind = end - current;
+        const now = Date.now();
+
+        // 停滞检测：丢帧导致解码器卡住时，currentTime 不再前进
+        if (Math.abs(current - lastCurrentTime) < 0.001) {
+            if (now - lastAdvanceTime > 150 && behind > 0.1) {
+                videoPlayer.currentTime = end - 0.05;
+                lastAdvanceTime = now;
+            }
+        } else {
+            lastAdvanceTime = now;
+        }
+        lastCurrentTime = current;
+
+        if (behind > 0.2) {
+            // 超过 200ms：直接跳到直播边缘，保留 50ms 缓冲
+            videoPlayer.currentTime = end - 0.05;
+            videoPlayer.playbackRate = 1;
+        } else if (behind > 0.1) {
+            // 100~200ms：2x 加速平滑追赶
+            videoPlayer.playbackRate = 2;
+        } else {
+            videoPlayer.playbackRate = 1;
+        }
+
+        // 激进清理旧缓冲：只保留当前位置前 300ms
+        if (current > 0.3 && !sourceBuffer.updating) {
+            try { sourceBuffer.remove(0, current - 0.3); } catch (e) {}
+        }
+    }, 50);
+
+    // 处理二进制视频数据：WebM 走 MSE，JPEG 走 canvas
+    // pending 队列上限：40ms 切片 × 5 = 最多 200ms 排队延迟
+    const MAX_PENDING = 5;
+
+    function handleBinaryVideo(arrayBuffer) {
+        if (!videoEnabled) return;
+        const view = new Uint8Array(arrayBuffer);
+        // WebM 以 EBML 头 0x1A 0x45 开头；JPEG 以 0xFF 0xD8 开头
+        const isWebM = view.length >= 2 && view[0] === 0x1A && view[1] === 0x45;
+        if (isWebM) {
+            if (!mediaSource) initMediaSource();
+            // ★ 关键修复：sourceBuffer 可能尚未创建（sourceopen 还没触发），
+            //   此时必须入队而不是丢弃。第一块含 init segment，丢了就永久黑屏。
+            if (!sourceBuffer || sourceBuffer.updating) {
+                // 队列上限：解码端跟不上时丢弃最旧的媒体段，防止延迟累积
+                if (pendingChunks.length >= MAX_PENDING) pendingChunks.shift();
+                pendingChunks.push(arrayBuffer);
+            } else {
+                try { sourceBuffer.appendBuffer(arrayBuffer); }
+                catch (e) {
+                    if (pendingChunks.length >= MAX_PENDING) pendingChunks.shift();
+                    pendingChunks.push(arrayBuffer);
+                }
+            }
+        } else {
+            // JPEG 帧：canvas 渲染（用于 snapshot 帧或无摄像头模式）
+            renderJpegBlob(new Blob([arrayBuffer], { type: 'image/jpeg' }));
+        }
+    }
+
+    function renderJpegBlob(blob) {
+        if (!videoEnabled) return;
+        videoCanvas.style.display = 'block';
+        videoPlayer.style.display = 'none';
+        if (typeof createImageBitmap !== 'undefined') {
+            createImageBitmap(blob).then(bmp => {
+                videoCanvas.width = bmp.width;
+                videoCanvas.height = bmp.height;
+                videoCtx.drawImage(bmp, 0, 0);
+                bmp.close();
+            }).catch(() => {});
+        } else {
+            const url = URL.createObjectURL(blob);
+            const img = new Image();
+            img.onload = () => {
+                videoCanvas.width = img.naturalWidth;
+                videoCanvas.height = img.naturalHeight;
+                videoCtx.drawImage(img, 0, 0);
+                URL.revokeObjectURL(url);
+            };
+            img.src = url;
+        }
+    }
+
     document.getElementById('btnStartVideo').onclick = function() {
-        const img = document.getElementById('videoStream');
-        img.src = `${getServerUrl()}/api/video/stream`;
-        log('开始接收视频流', 'success');
+        videoEnabled = true;
+        videoPlayer.muted = true;
+        // 订阅设备后，后端会自动转发 video_frame 消息，在此渲染到 canvas
+        log('视频已开启，等待设备上传 video_frame...', 'success');
     };
 
     document.getElementById('btnStopVideo').onclick = function() {
-        const img = document.getElementById('videoStream');
-        img.src = '';
-        log('已停止视频流', 'info');
+        videoEnabled = false;
+        videoPlayer.pause();
+        log('已停止视频显示', 'info');
     };
 
     // 初始化

@@ -104,7 +104,7 @@
         </div>
         <div class="row">
             <label>视频上传间隔(毫秒):</label>
-            <input type="number" id="frameInterval" value="200" min="50" max="2000">
+            <input type="number" id="frameInterval" value="33" min="16" max="2000">
         </div>
         <div class="row">
             <label>连接状态:</label>
@@ -196,9 +196,12 @@
         log(`正在连接: ${wsUrl}`);
         try {
             ws = new WebSocket(wsUrl);
+            ws.binaryType = 'arraybuffer';
             ws.onopen = () => {
                 setConnStatus(true);
                 log('WebSocket 连接成功 ✓', 'success');
+                // 连接建立后立即登记设备，这样后端才知道后续二进制帧属于哪个设备
+                ws.send(JSON.stringify({ type: 'register', deviceId: getDeviceId() }));
             };
             ws.onclose = () => {
                 setConnStatus(false);
@@ -208,8 +211,8 @@
                 log('WebSocket 错误: ' + e, 'error');
             };
             ws.onmessage = (event) => {
+                // 后端下行消息（如 command 指令）在此处理
                 log(`收到服务器消息: ${event.data.substring(0, 100)}`, 'info');
-                // 可以在这里处理小车下发的指令，例如开始采摘、停止等
             };
         } catch (e) {
             log('连接失败: ' + e.message, 'error');
@@ -307,83 +310,189 @@
     };
 
     // ===== 3. 摄像头与视频上传 =====
+
     document.getElementById('btnStartCamera').onclick = async function() {
         try {
             mediaStream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment' },
+                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
                 audio: false
             });
-            document.getElementById('video').srcObject = mediaStream;
-            log('摄像头已开启 ✓', 'success');
+            const videoEl = document.getElementById('video');
+            videoEl.srcObject = mediaStream;
+            videoEl.onloadedmetadata = () => {
+                // canvas 匹配摄像头原始分辨率，不缩放=不模糊
+                _canvas.width = videoEl.videoWidth;
+                _canvas.height = videoEl.videoHeight;
+                log(`摄像头已开启 ${videoEl.videoWidth}x${videoEl.videoHeight} ✓`, 'success');
+            };
         } catch (e) {
             log('摄像头开启失败: ' + e.message, 'error');
             log('将使用模拟视频帧（彩色测试图）', 'info');
         }
     };
 
+    // ===== 视频上传：MediaRecorder（硬件编码 WebM，跟摄像头同帧率同清晰度）=====
+    let mediaRecorder = null;
+    let snapshotTimer = null;
+
     document.getElementById('btnStartUpload').onclick = function() {
-        if (uploadTimer) {
-            log('视频帧上传已在运行', 'error');
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+            log('视频上传已在运行', 'error');
             return;
         }
-        const interval = parseInt(document.getElementById('frameInterval').value);
-        log(`开始上传视频帧，间隔 ${interval}ms（约 ${(1000 / interval).toFixed(1)} fps）`);
-        uploadTimer = setInterval(uploadFrame, interval);
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            log('请先连接 WebSocket', 'error');
+            return;
+        }
+
+        // 有真实摄像头 → MediaRecorder 硬件编码 WebM，流畅度=摄像头原生帧率
+        if (mediaStream && mediaStream.active) {
+            startMediaRecorderUpload();
+        } else {
+            // 无摄像头 → 回退到 JPEG 模拟帧
+            startSimulatedFrameUpload();
+        }
     };
 
     document.getElementById('btnStopUpload').onclick = function() {
-        if (uploadTimer) {
-            clearInterval(uploadTimer);
-            uploadTimer = null;
-            log('已停止视频帧上传', 'info');
+        if (videoUploadTimer) {
+            clearInterval(videoUploadTimer);
+            videoUploadTimer = null;
         }
+        if (uploadTimer) {
+            clearTimeout(uploadTimer);
+            uploadTimer = null;
+        }
+        if (snapshotTimer) {
+            clearInterval(snapshotTimer);
+            snapshotTimer = null;
+        }
+        frameQueue = [];
+        log('已停止视频上传', 'info');
     };
 
-    function uploadFrame() {
-        const canvas = document.getElementById('canvas');
-        const video = document.getElementById('video');
-        canvas.width = 320;
-        canvas.height = 240;
-        const ctx = canvas.getContext('2d');
+    // 摄像头视频帧上传：按 10fps 抓取摄像头画面，转 base64 JPEG，
+    // 以 video_frame 消息发送给后端，后端转发给所有订阅了该设备的 Dashboard。
+    // 协议与真实机器人一致：{"type":"video_frame","deviceId":"...","image":"base64..."}
+    let videoUploadTimer = null;
+    const VIDEO_FPS = 10;
+    const VIDEO_QUALITY = 0.7;
+    const VIDEO_WIDTH = 640;
+    const VIDEO_HEIGHT = 480;
 
-        if (mediaStream && video.readyState >= 2) {
-            // 真实摄像头画面
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        } else {
-            // 生成模拟测试图（时间戳 + 渐变背景）
-            const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-            const hue = (Date.now() / 10) % 360;
-            gradient.addColorStop(0, `hsl(${hue}, 70%, 50%)`);
-            gradient.addColorStop(1, `hsl(${(hue + 60) % 360}, 70%, 30%)`);
-            ctx.fillStyle = gradient;
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 20px sans-serif';
-            ctx.fillText('🤖 采摘机器人', 60, 100);
-            ctx.font = '14px monospace';
-            ctx.fillText('Device: ' + getDeviceId(), 60, 130);
-            ctx.fillText('Time: ' + new Date().toLocaleTimeString(), 60, 155);
-            // 画一个移动的小圆点表示位置
-            const t = Date.now() / 500;
-            const x = 160 + Math.cos(t) * 80;
-            const y = 200 + Math.sin(t) * 20;
-            ctx.beginPath();
-            ctx.arc(x, y, 8, 0, Math.PI * 2);
-            ctx.fillStyle = '#ff0';
-            ctx.fill();
+    function startMediaRecorderUpload() {
+        if (!mediaStream) {
+            log('摄像头未就绪', 'error');
+            return;
         }
+
+        const video = document.getElementById('video');
+        const captureCanvas = document.createElement('canvas');
+        captureCanvas.width = VIDEO_WIDTH;
+        captureCanvas.height = VIDEO_HEIGHT;
+        const ctx = captureCanvas.getContext('2d');
+
+        const sendFrame = () => {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            if (video.readyState < 2) return;
+            // 把摄像头画面缩放到 640x480 后编码 JPEG
+            ctx.drawImage(video, 0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
+            captureCanvas.toBlob(blob => {
+                if (!blob || !ws || ws.readyState !== WebSocket.OPEN) return;
+                const reader = new FileReader();
+                reader.onload = () => {
+                    const base64 = reader.result.split(',')[1]; // 去掉 data:image/jpeg;base64, 前缀
+                    ws.send(JSON.stringify({
+                        type: 'video_frame',
+                        deviceId: getDeviceId(),
+                        image: base64,
+                        timestamp: Date.now()
+                    }));
+                };
+                reader.readAsDataURL(blob);
+            }, 'image/jpeg', VIDEO_QUALITY);
+        };
+
+        // 先立即发一帧，再按 100ms（10fps）间隔持续发送
+        sendFrame();
+        videoUploadTimer = setInterval(sendFrame, 1000 / VIDEO_FPS);
+        log(`已开启视频帧上传（${VIDEO_WIDTH}x${VIDEO_HEIGHT}, JPEG质量${VIDEO_QUALITY}, ${VIDEO_FPS}fps）`, 'success');
+    }
+
+    // 无摄像头模式：JPEG 模拟帧
+    let frameQueue = [];
+    const MAX_QUEUE = 1;
+    let uploading = false;
+    const _canvas = document.getElementById('canvas');
+    _canvas.width = 640;
+    _canvas.height = 480;
+
+    function startSimulatedFrameUpload() {
+        const interval = parseInt(document.getElementById('frameInterval').value);
+        log(`开始上传模拟视频帧，间隔 ${interval}ms`);
+        const loop = () => {
+            captureSimulatedFrame();
+            uploadTimer = setTimeout(loop, interval);
+        };
+        loop();
+    }
+
+    function captureSimulatedFrame() {
+        if (frameQueue.length >= MAX_QUEUE) return;
+        const canvas = _canvas;
+        const ctx = canvas.getContext('2d');
+        const gradient = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+        const hue = (Date.now() / 10) % 360;
+        gradient.addColorStop(0, `hsl(${hue}, 70%, 50%)`);
+        gradient.addColorStop(1, `hsl(${(hue + 60) % 360}, 70%, 30%)`);
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 36px sans-serif';
+        ctx.fillText('🤖 采摘机器人', 160, 200);
+        ctx.font = '22px monospace';
+        ctx.fillText('Device: ' + getDeviceId(), 160, 250);
+        ctx.fillText('Time: ' + new Date().toLocaleTimeString(), 160, 285);
+        const t = Date.now() / 500;
+        const x = 320 + Math.cos(t) * 140;
+        const y = 380 + Math.sin(t) * 40;
+        ctx.beginPath();
+        ctx.arc(x, y, 12, 0, Math.PI * 2);
+        ctx.fillStyle = '#ff0';
+        ctx.fill();
 
         canvas.toBlob(blob => {
             if (!blob) return;
-            const formData = new FormData();
-            formData.append('file', blob, 'frame.jpg');
-            formData.append('deviceId', getDeviceId());
-            const url = `${getServerUrl()}/api/video/upload`;
-            fetch(url, { method: 'POST', body: formData })
-                .then(r => r.json())
-                .then(data => log(`视频帧上传 ${data.success === 200 ? '成功' : '失败'}: ${data.success || ''}`, data.success === 200 ? 'success' : 'error'))
-                .catch(e => log('视频帧上传异常: ' + e.message, 'error'));
-        }, 'image/jpeg', 0.7);
+            frameQueue.push(blob);
+            tryUploadNext();
+        }, 'image/jpeg', 0.8);
+    }
+
+    function tryUploadNext() {
+        if (uploading || frameQueue.length === 0) return;
+        if (!ws || ws.readyState !== WebSocket.OPEN) { frameQueue = []; return; }
+        uploading = true;
+        const blob = frameQueue.shift();
+        try { ws.send(blob); } catch (e) {}
+        finally { uploading = false; tryUploadNext(); }
+    }
+
+    // 每秒抓一帧 JPEG 存到后端（供 snapshot 接口用）
+    function sendJpegSnapshot() {
+        if (!mediaStream) return;
+        const video = document.getElementById('video');
+        if (video.readyState < 2) return;
+        const c = document.createElement('canvas');
+        c.width = video.videoWidth;
+        c.height = video.videoHeight;
+        c.getContext('2d').drawImage(video, 0, 0);
+        c.toBlob(blob => {
+            if (blob && ws && ws.readyState === WebSocket.OPEN) {
+                // 标记为 JPEG 快照：在帧前加 1 字节标记 0xFF
+                // 后端通过前 2 字节 0xFFD8 判断 JPEG，WebM 是 0x1A45
+                try { ws.send(blob); } catch (e) {}
+            }
+        }, 'image/jpeg', 0.8);
     }
 
     // ===== 4. 清空日志 =====

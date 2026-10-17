@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.example.fruitpickingrobt.service.control.ChassisCommandService;
 import org.example.fruitpickingrobt.store.ChassisStateCache;
+import org.example.fruitpickingrobt.store.VideoFrameStore;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -55,15 +56,21 @@ public class FrontendWebSocketHandler extends TextWebSocketHandler {
     private final ChassisCommandService commandService;
     private final ChassisStateCache cache;
     private final ObjectMapper objectMapper;
+    private final VideoFrameStore videoFrameStore;
+    private final DeviceSessionRegistry deviceSessionRegistry;
 
     public FrontendWebSocketHandler(FrontendSessionRegistry frontendRegistry,
                                     ChassisCommandService commandService,
                                     ChassisStateCache cache,
-                                    ObjectMapper objectMapper) {
+                                    ObjectMapper objectMapper,
+                                    VideoFrameStore videoFrameStore,
+                                    DeviceSessionRegistry deviceSessionRegistry) {
         this.frontendRegistry = frontendRegistry;
         this.commandService = commandService;
         this.cache = cache;
         this.objectMapper = objectMapper;
+        this.videoFrameStore = videoFrameStore;
+        this.deviceSessionRegistry = deviceSessionRegistry;
     }
 
     @Override
@@ -88,6 +95,14 @@ public class FrontendWebSocketHandler extends TextWebSocketHandler {
                     ack.put("deviceId", deviceId);
                     cache.readLatest(deviceId).ifPresent(n -> ack.set("latest", n));
                     session.sendMessage(new TextMessage(ack.toString()));
+
+                    // ★ 视频帧秒出图：如果该设备已有缓存的最新一帧 video_frame，
+                    //   直接推给前端，不用等到下一次设备上报（可能要等几百毫秒到几秒）。
+                    String cachedFrame = videoFrameStore.getFrameJson(deviceId);
+                    if (cachedFrame != null) {
+                        session.sendMessage(new TextMessage(cachedFrame));
+                        log.info("[订阅秒出图] 已推送 deviceId={} 的缓存视频帧", deviceId);
+                    }
                 }
                 case "unsubscribe" -> {
                     frontendRegistry.unsubscribe(deviceId, session);
@@ -105,6 +120,15 @@ public class FrontendWebSocketHandler extends TextWebSocketHandler {
                     // 一次性动作：enable / clear_error / emergency_stop / stop
                     String action = node.path("action").asText("");
                     commandService.sendAction(deviceId, action, null, null, "WS");
+                }
+                case "webrtc_answer", "webrtc_ice", "webrtc_offer" -> {
+                    // WebRTC 信令：前端把 answer / ICE candidate 转发给对应设备
+                    // 媒体流走 P2P 直连，后端只转发信令，延迟最低
+                    if (deviceId.isEmpty()) return;
+                    var deviceSession = deviceSessionRegistry.getSession(deviceId);
+                    if (deviceSession != null && deviceSession.isOpen()) {
+                        deviceSession.sendMessage(new TextMessage(message.getPayload()));
+                    }
                 }
                 default -> log.debug("[前端] 未知消息类型: {}", type);
             }

@@ -16,8 +16,11 @@ public class VideoFrameStore {
     // 使用 AtomicReference 保证多线程下替换帧的原子性
     private final AtomicReference<byte[]> currentFrame = new AtomicReference<>(new byte[0]);
 
-    // 记录每个设备上传的视频帧
+    // 记录每个设备上传的视频帧（JPEG 二进制）
     private final ConcurrentHashMap<String, byte[]> deviceFrames = new ConcurrentHashMap<>();
+
+    // 记录每个设备最近一帧 video_frame 消息的原始 JSON（用于新订阅者秒出图）
+    private final ConcurrentHashMap<String, String> deviceFrameJson = new ConcurrentHashMap<>();
 
     // 记录最后更新时间
     private final AtomicReference<Long> lastUpdateTime = new AtomicReference<>(0L);
@@ -41,6 +44,27 @@ public class VideoFrameStore {
         deviceFrames.put(deviceId, jpegBytes);
         currentFrame.set(jpegBytes);
         lastUpdateTime.set(System.currentTimeMillis());
+    }
+
+    /**
+     * 缓存某设备最新一帧 video_frame 消息的原始 JSON。
+     * 新前端订阅时直接推这条 JSON，不用等下一帧到达（秒出图）。
+     */
+    public void putFrameJson(String deviceId, String json) {
+        if (deviceId == null || deviceId.isEmpty() || json == null) {
+            return;
+        }
+        deviceFrameJson.put(deviceId, json);
+    }
+
+    /**
+     * 取出某设备最新一帧 video_frame 的 JSON（可能为 null）。
+     */
+    public String getFrameJson(String deviceId) {
+        if (deviceId == null || deviceId.isEmpty()) {
+            return null;
+        }
+        return deviceFrameJson.get(deviceId);
     }
 
     /**

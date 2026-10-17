@@ -87,8 +87,8 @@ public class DeviceTelemetryService {
             ObjectNode geometry = feature.putObject("geometry");
             geometry.put("type", "Point");
             geometry.putArray("coordinates")
-                    .add(record.getLongitude())
-                    .add(record.getLatitude());
+                    .add(record.getLongitude() != null ? record.getLongitude() : record.getLng())
+                    .add(record.getLatitude() != null ? record.getLatitude() : record.getLat());
 
             ObjectNode properties = readObject(record.getPayloadJson());
             properties.remove(List.of("lat", "lng", "latitude", "longitude"));
@@ -104,7 +104,11 @@ public class DeviceTelemetryService {
     public ArrayNode asCoordinateArray(List<LocationRecord> records) {
         ArrayNode result = objectMapper.createArrayNode();
         for (LocationRecord record : records) {
-            result.addArray().add(record.getLongitude()).add(record.getLatitude());
+            Double lng = record.getLongitude() != null ? record.getLongitude() : record.getLng();
+            Double lat = record.getLatitude() != null ? record.getLatitude() : record.getLat();
+            if (lng != null && lat != null) {
+                result.addArray().add(lng).add(lat);
+            }
         }
         return result;
     }
@@ -113,7 +117,8 @@ public class DeviceTelemetryService {
     public Optional<ObjectNode> getLatestSnapshot(String deviceId) {
         Map<String, String> payloads;
         try {
-            payloads = locationStore.getAll(deviceId);
+            // getAll 可能返回不可修改 Map，包一层 HashMap 保证可写
+            payloads = new java.util.HashMap<>(locationStore.getAll(deviceId));
         } catch (RuntimeException e) {
             log.warn("读取 Redis 失败，改从 MySQL 查询: deviceId={}", deviceId);
             payloads = new java.util.HashMap<>();
@@ -125,8 +130,15 @@ public class DeviceTelemetryService {
             if (!payloads.containsKey(field)) {
                 LocationRecord record = locationRecordDAO.selectLatestByType(deviceId, type);
                 if (record != null) {
-                    payloads.put(field, record.getPayloadJson());
-                    cacheQuietly(deviceId, field, record.getPayloadJson());
+                    String payload = record.getPayloadJson();
+                    // 旧数据只有 lat/lng 列、payload_json 为空时，从记录字段构造 JSON
+                    if (payload == null || payload.isEmpty()) {
+                        payload = buildPayloadFromRecord(record);
+                    }
+                    if (payload != null) {
+                        payloads.put(field, payload);
+                        cacheQuietly(deviceId, field, payload);
+                    }
                 }
             }
         }
@@ -140,6 +152,32 @@ public class DeviceTelemetryService {
         putPayload(result, "status", payloads.get("status"));
         putPayload(result, "armParams", payloads.get("armParams"));
         return Optional.of(result);
+    }
+
+    /** 当 payload_json 为空时，从 LocationRecord 的经纬度/方向角字段构造 JSON。 */
+    private String buildPayloadFromRecord(LocationRecord record) {
+        try {
+            Double lat = record.getLatitude() != null ? record.getLatitude() : record.getLat();
+            Double lng = record.getLongitude() != null ? record.getLongitude() : record.getLng();
+            if (lat == null || lng == null) {
+                return null;
+            }
+            ObjectNode node = objectMapper.createObjectNode();
+            node.put("latitude", lat);
+            node.put("longitude", lng);
+            node.put("lat", lat);
+            node.put("lng", lng);
+            if (record.getBearing() != null) {
+                node.put("bearing", record.getBearing());
+            }
+            if (record.getRecordedAt() != null) {
+                node.put("recordedAt", TIME_FORMAT.format(record.getRecordedAt()));
+            }
+            return objectMapper.writeValueAsString(node);
+        } catch (Exception e) {
+            log.warn("从记录字段构造 payload 失败: recordId={}", record.getId(), e);
+            return null;
+        }
     }
 
     private void cacheQuietly(String deviceId, String field, String payloadJson) {
