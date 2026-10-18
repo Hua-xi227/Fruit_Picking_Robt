@@ -168,8 +168,10 @@
     function getServerUrl() {
         let url = document.getElementById('serverUrl').value.trim();
         if (!url) {
-            // 默认使用当前页面的主机
-            url = `${location.protocol}//${location.hostname}:8082`;
+            // 本地 vite 开发（5173）走本机后端；线上走当前站点根路径（nginx 已代理 /api/ 与 /ws-location）
+            url = location.port === '5173'
+                ? `${location.protocol}//${location.hostname}:8082`
+                : location.origin;
         }
         return url.replace(/\/$/, '');
     }
@@ -192,7 +194,10 @@
             return;
         }
         const baseUrl = getServerUrl().replace(/^http/, 'ws');
-        const wsUrl = `${baseUrl}/ws/location`;
+        // nginx 上代理的是 /ws-location（无斜杠），实测握手 101；本地 vite 用 /ws/location
+        const wsUrl = location.port === '5173'
+            ? `${baseUrl}/ws/location`
+            : `${baseUrl}/ws-location`;
         log(`正在连接: ${wsUrl}`);
         try {
             ws = new WebSocket(wsUrl);
@@ -392,8 +397,11 @@
     };
 
     // ===== 初始化 =====
+    // 默认填当前站点根路径；本地 vite(5173) 才指向本机 8082
     if (location.hostname) {
-        document.getElementById('serverUrl').value = `${location.protocol}//${location.hostname}:8082`;
+        document.getElementById('serverUrl').value = location.port === '5173'
+            ? `${location.protocol}//${location.hostname}:8082`
+            : location.origin;
     }
     log('模拟器已加载，请配置后端地址后点击"连接 WebSocket"', 'info');
 </script>

@@ -166,9 +166,17 @@
     function getServerUrl() {
         let url = document.getElementById('serverUrl').value.trim();
         if (!url) {
-            url = `${location.protocol}//${location.hostname}:8082`;
+            // 本地 vite 开发（5173）走本机后端；线上走当前站点根路径（nginx 已代理 /api/ 与 /ws-location）
+            url = location.port === '5173'
+                ? `${location.protocol}//${location.hostname}:8082`
+                : location.origin;
         }
         return url.replace(/\/$/, '');
+    }
+
+    // 与 simulator.html 保持同一个设备ID
+    function getDeviceId() {
+        return 'car-001';
     }
 
     function setConnStatus(online) {
@@ -185,7 +193,10 @@
             return;
         }
         const baseUrl = getServerUrl().replace(/^http/, 'ws');
-        const wsUrl = `${baseUrl}/ws/location`;
+        // nginx 上代理的是 /ws-location（无斜杠），实测握手 101；本地 vite 用 /ws/location
+        const wsUrl = location.port === '5173'
+            ? `${baseUrl}/ws/location`
+            : `${baseUrl}/ws-location`;
         log(`正在连接: ${wsUrl}`);
         try {
             ws = new WebSocket(wsUrl);
@@ -201,11 +212,14 @@
             ws.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    if (data.lat && data.lng) {
-                        addPoint(data);
+                    // 兼容两种字段名：定位广播用 lat/lng，底盘遥测帧用 latitude/longitude
+                    const la = data.lat ?? data.latitude;
+                    const lo = data.lng ?? data.longitude;
+                    if (la != null && lo != null) {
+                        addPoint({ lat: la, lng: lo, bearing: data.bearing });
                         updateInfo(data);
                         drawMap();
-                        log(`收到位置: lat=${data.lat.toFixed(6)}, lng=${data.lng.toFixed(6)}`, 'recv');
+                        log(`收到位置: lat=${la.toFixed(6)}, lng=${lo.toFixed(6)}`, 'recv');
                     } else {
                         log(`收到非位置消息: ${event.data.substring(0, 80)}`, 'recv');
                     }
@@ -228,28 +242,40 @@
 
     // 2. 加载历史轨迹
     document.getElementById('btnLoadHistory').onclick = function() {
-        const url = `${getServerUrl()}/api/history`;
+        // 注意：原 /api/history 已不存在，真实路径是 /api/devices/{deviceId}/history
+        // 用 format=coordinates 直接拿 [[经度, 纬度], ...]，避免自己解析 GeoJSON
+        const deviceId = getDeviceId();
+        const url = `${getServerUrl()}/api/devices/${deviceId}/history?format=coordinates`;
         log(`GET ${url}`);
         fetch(url)
-            .then(r => r.json())
-            .then(res => {
-                if (res.success === 200 && res.data) {
-                    points.length = 0;
-                    res.data.forEach(p => {
-                        if (p.lat && p.lng) points.push({ lat: p.lat, lng: p.lng });
-                    });
-                    log(`加载了 ${points.length} 个历史轨迹点`, 'success');
-                    drawMap();
-                    updateInfo({});
-                } else {
-                    log('历史数据格式异常: ' + JSON.stringify(res).substring(0, 100), 'error');
+            .then(r => {
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return r.json();
+            })
+            .then(list => {
+                if (!Array.isArray(list)) {
+                    log('历史数据格式异常: ' + JSON.stringify(list).substring(0, 100), 'error');
+                    return;
                 }
+                points.length = 0;
+                // 数组里每项是 [经度, 纬度]
+                list.forEach(pair => {
+                    const lng = pair[0], lat = pair[1];
+                    if (typeof lng === 'number' && typeof lat === 'number') {
+                        points.push({ lat: lat, lng: lng });
+                    }
+                });
+                log(`加载了 ${points.length} 个历史轨迹点`, 'success');
+                drawMap();
+                updateInfo({});
             })
             .catch(e => log('加载历史失败: ' + e.message, 'error'));
     };
 
     document.getElementById('btnGetLatest').onclick = function() {
-        const url = `${getServerUrl()}/api/latest`;
+        // 原 /api/latest 已不存在，真实路径是 /api/devices/{deviceId}/latest
+        const deviceId = getDeviceId();
+        const url = `${getServerUrl()}/api/devices/${deviceId}/latest`;
         log(`GET ${url}`);
         fetch(url)
             .then(r => {
@@ -257,12 +283,20 @@
                     log('当前无最新位置数据', 'info');
                     return null;
                 }
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
                 return r.json();
             })
             .then(data => {
                 if (data) {
                     log('最新位置: ' + JSON.stringify(data), 'success');
-                    updateInfo(data);
+                    // 后端 latest 用的是 latitude/longitude，这里做兼容
+                    updateInfo({
+                        deviceId: deviceId,
+                        lat: data.latitude ?? data.lat,
+                        lng: data.longitude ?? data.lng,
+                        bearing: data.bearing,
+                        timestamp: data.recordedAt || data.timestamp
+                    });
                 }
             })
             .catch(e => log('获取最新位置失败: ' + e.message, 'error'));
@@ -282,11 +316,15 @@
 
     function updateInfo(data) {
         if (data.deviceId) document.getElementById('infoDeviceId').textContent = data.deviceId;
-        if (data.lng != null) document.getElementById('infoLng').textContent = data.lng.toFixed(6);
-        if (data.lat != null) document.getElementById('infoLat').textContent = data.lat.toFixed(6);
+        // 兼容两种字段名：底盘/定位广播用 lat/lng，latest 接口用 latitude/longitude
+        const lo = data.lng ?? data.longitude;
+        const la = data.lat ?? data.latitude;
+        if (lo != null) document.getElementById('infoLng').textContent = lo.toFixed(6);
+        if (la != null) document.getElementById('infoLat').textContent = la.toFixed(6);
         if (data.bearing != null) document.getElementById('infoBearing').textContent = data.bearing.toFixed(1);
-        if (data.timestamp) {
-            document.getElementById('infoTime').textContent = new Date(data.timestamp).toLocaleTimeString();
+        const ts = data.timestamp || data.recordedAt;
+        if (ts) {
+            document.getElementById('infoTime').textContent = new Date(ts).toLocaleTimeString();
         } else {
             document.getElementById('infoTime').textContent = new Date().toLocaleTimeString();
         }
@@ -395,7 +433,8 @@
     // 5. 视频流控制
     document.getElementById('btnStartVideo').onclick = function() {
         const img = document.getElementById('videoStream');
-        img.src = `${getServerUrl()}/api/video/stream`;
+        // 带 deviceId，避免多设备时拉到别的车的画面
+        img.src = `${getServerUrl()}/api/video/stream?deviceId=${getDeviceId()}`;
         log('开始接收视频流', 'success');
     };
 
@@ -406,8 +445,11 @@
     };
 
     // 初始化
+    // 默认填当前站点根路径；本地 vite(5173) 才指向本机 8082
     if (location.hostname) {
-        document.getElementById('serverUrl').value = `${location.protocol}//${location.hostname}:8082`;
+        document.getElementById('serverUrl').value = location.port === '5173'
+            ? `${location.protocol}//${location.hostname}:8082`
+            : location.origin;
     }
     log('测试助手已加载', 'info');
     log('使用提示：', 'info');
