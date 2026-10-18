@@ -2,6 +2,7 @@ package org.example.fruitpickingrobt.websocket;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -72,6 +73,35 @@ public class FrontendSessionRegistry {
                 session.sendMessage(message);
             } catch (Exception e) {
                 log.warn("[前端推送] 发送失败，移除会话: {}", e.getMessage());
+                set.remove(session);
+            }
+        }
+    }
+
+    /**
+     * 二进制视频帧广播（低延迟路径）。
+     * 直接转发 JPEG 字节给订阅前端，前端用 createImageBitmap 渲染到 canvas，
+     * 不走 base64/JSON/MJPEG，延迟最低。
+     */
+    public void broadcastBinary(String deviceId, byte[] data) {
+        CopyOnWriteArraySet<WebSocketSession> set = byDevice.get(deviceId);
+        if (set == null || set.isEmpty()) {
+            // 无订阅者是常态（模拟器推流时可能还没有前端连接），用 debug 避免刷屏
+            log.debug("[前端推送-二进制] 无订阅者 deviceId={}", deviceId);
+            return;
+        }
+        // 高频路径（25fps）：降到 debug，避免日志 IO 拖慢推送
+        log.debug("[前端推送-二进制] deviceId={}, 订阅者={}, 帧大小={}", deviceId, set.size(), data.length);
+        BinaryMessage message = new BinaryMessage(data);
+        for (WebSocketSession session : set) {
+            if (!session.isOpen()) {
+                set.remove(session);
+                continue;
+            }
+            try {
+                session.sendMessage(message);
+            } catch (Exception e) {
+                log.error("[前端推送-二进制] 发送失败 session={}, err={}", session.getId(), e.getMessage());
                 set.remove(session);
             }
         }

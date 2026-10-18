@@ -11,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import javax.servlet.http.HttpServletResponse;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -48,37 +49,36 @@ public class VideoStreamController {
      * 返回 multipart/x-mixed-replace 流，前端用 <img> 标签接收
      */
     @GetMapping(value = "/stream", produces = "multipart/x-mixed-replace;boundary=" + BOUNDARY)
-    public StreamingResponseBody streamVideo(@RequestParam(value = "deviceId", required = false) String deviceId) {
+    public StreamingResponseBody streamVideo(@RequestParam(value = "deviceId", required = false) String deviceId,
+                                             HttpServletResponse response) {
         log.info("前端开始拉取视频流：deviceId={}", deviceId);
+        // 显式设置 Content-Type，避免部分环境下 produces 未写入响应头导致浏览器把 MJPEG 当普通图片
+        response.setContentType("multipart/x-mixed-replace;boundary=" + BOUNDARY);
+        response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        response.setHeader("Pragma", "no-cache");
 
         return outputStream -> {
-            // 调度器：每 200ms 检查一次是否有新帧
             ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
             try {
                 byte[] lastFrame = null;
                 long startTime = System.currentTimeMillis();
-                // 最多推送 5 分钟（避免连接永远不释放）
                 long maxDuration = 5 * 60 * 1000L;
 
                 while (System.currentTimeMillis() - startTime < maxDuration) {
                     byte[] currentFrame = videoFrameStore.getFrame(deviceId);
-                    if (currentFrame != null && currentFrame.length > 0) {
-                        // 只有当帧有变化时才推送（避免重复发送）
-                        if (lastFrame == null || currentFrame != lastFrame) {
-                            // 写入 MJPEG 帧头
-                            String header = "--" + BOUNDARY + "\r\n"
-                                    + "Content-Type: image/jpeg\r\n"
-                                    + "Content-Length: " + currentFrame.length + "\r\n\r\n";
-                            outputStream.write(header.getBytes());
-                            outputStream.write(currentFrame);
-                            outputStream.write("\r\n".getBytes());
-                            outputStream.flush();
-                            lastFrame = currentFrame;
-                            log.debug("推送视频帧：size={} bytes", currentFrame.length);
-                        }
+                    // 仅当有新帧（引用不同）时才推送，避免重复帧导致浏览器缓冲堆积、画面卡顿
+                    if (currentFrame != null && currentFrame.length > 0 && currentFrame != lastFrame) {
+                        String header = "--" + BOUNDARY + "\r\n"
+                                + "Content-Type: image/jpeg\r\n"
+                                + "Content-Length: " + currentFrame.length + "\r\n\r\n";
+                        outputStream.write(header.getBytes());
+                        outputStream.write(currentFrame);
+                        outputStream.write("\r\n".getBytes());
+                        outputStream.flush();
+                        lastFrame = currentFrame;
                     }
-                    // 等待 66ms 再检查下一帧（约 15fps）
-                    Thread.sleep(66);
+                    // 33ms 轮询一次（约 30fps 响应），有新帧立即推送
+                    Thread.sleep(33);
                 }
             } catch (InterruptedException e) {
                 log.info("视频流推送被中断");

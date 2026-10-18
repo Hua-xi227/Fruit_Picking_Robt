@@ -7,20 +7,24 @@ import org.example.fruitpickingrobt.dto.chassis.ChassisTelemetryDTO;
 import org.example.fruitpickingrobt.service.chassis.ChassisTelemetryService;
 import org.example.fruitpickingrobt.service.control.CommandAckHandler;
 import org.example.fruitpickingrobt.service.telemetry.DeviceTelemetryService;
+import org.example.fruitpickingrobt.store.VideoFrameStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
+import java.util.Base64;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
@@ -60,19 +64,22 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     private final CommandAckHandler commandAckHandler;
     private final ChassisTelemetryService chassisTelemetryService;
     private final FrontendSessionRegistry frontendRegistry;
+    private final VideoFrameStore videoFrameStore;
 
     public LocationWebSocketHandler(DeviceTelemetryService telemetryService,
                                     ObjectMapper objectMapper,
                                     DeviceSessionRegistry deviceSessionRegistry,
                                     CommandAckHandler commandAckHandler,
                                     ChassisTelemetryService chassisTelemetryService,
-                                    FrontendSessionRegistry frontendRegistry) {
+                                    FrontendSessionRegistry frontendRegistry,
+                                    VideoFrameStore videoFrameStore) {
         this.telemetryService = telemetryService;
         this.objectMapper = objectMapper;
         this.deviceSessionRegistry = deviceSessionRegistry;
         this.commandAckHandler = commandAckHandler;
         this.chassisTelemetryService = chassisTelemetryService;
         this.frontendRegistry = frontendRegistry;
+        this.videoFrameStore = videoFrameStore;
     }
 
     @Override
@@ -119,7 +126,16 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
             } else if ("result".equalsIgnoreCase(type)) {
                 commandAckHandler.onResult(node);
             }
-            dispatch((ObjectNode) node);
+
+            // —— 视频帧：type=video_frame（兼容 type=video）——
+            //   1) base64 解码后存进 VideoFrameStore，供 MJPEG 流 / 快照接口兜底；
+            //   2) 缓存原始 JSON，新前端订阅时可秒出图；
+            //   3) 帧本身会随下面的 broadcast 转发给所有订阅了该设备的前端。
+            if ("video_frame".equalsIgnoreCase(type) || "video".equalsIgnoreCase(type)) {
+                handleVideoFrame((ObjectNode) node, deviceId, payload);
+            } else {
+                dispatch((ObjectNode) node);
+            }
 
             // 低频数据（位置/状态/机械臂/视频帧）落库成功后，转发给订阅了该设备的前端。
             // 替代原来的无条件广播：设备之间不再互推，设备也不会收到自己发的包。
@@ -133,6 +149,40 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
             log.error("设备上报解析或存储失败: {}", e.getMessage(), e);
             sendError(sender, "消息处理失败: " + e.getMessage());
         }
+    }
+
+    /**
+     * 二进制视频帧直传（低延迟路径）。
+     *
+     * 设备端通过 WebSocket 直接发送 JPEG 二进制数据，跳过 HTTP / base64 / JSON 开销。
+     * 约定：连接建立后先发一条带 deviceId 的文本消息登记会话，
+     *       之后所有二进制消息都视为该设备的视频帧。
+     *
+     * 性能对比（240x180 JPEG）：
+     *   HTTP POST: TCP 握手 + HTTP 头 + multipart 解析 + base64 解码 ≈ 5-20ms/帧
+     *   WS binary: 直接写字节 ≈ 0.1-0.5ms/帧
+     */
+    @Override
+    protected void handleBinaryMessage(WebSocketSession session, BinaryMessage message) {
+        String deviceId = sessionDeviceIds.get(session.getId());
+        if (deviceId == null) {
+            sendError(session, "请先发送带 deviceId 的文本消息登记设备");
+            return;
+        }
+        ByteBuffer buffer = message.getPayload();
+        byte[] data = new byte[buffer.remaining()];
+        buffer.get(data);
+        if (data.length < 2) {
+            return;
+        }
+        // 判断二进制类型：JPEG 以 0xFFD8 开头，WebM 以 0x1A45DFA3 (EBML) 开头
+        boolean isJpeg = (data[0] & 0xFF) == 0xFF && (data[1] & 0xFF) == 0xD8;
+        if (isJpeg) {
+            // JPEG 快照：存 VideoFrameStore 供 /api/video/snapshot 使用
+            videoFrameStore.putFrame(deviceId, data);
+        }
+        // 无论是 WebM 视频块还是 JPEG 帧，都直接二进制转发给订阅前端
+        frontendRegistry.broadcastBinary(deviceId, data);
     }
 
     /**
@@ -154,6 +204,38 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
         // 50Hz 遥测本身就证明设备活着，不用再单独发心跳
         deviceSessionRegistry.recordHeartbeat(deviceId);
         chassisTelemetryService.onTelemetry(dto);
+    }
+
+    /**
+     * 视频帧处理（type=video_frame / video）。
+     *
+     * 从 JSON 里取出 base64 图片，解码成 JPEG 字节存进 VideoFrameStore，
+     * 同时缓存原始 JSON 供新订阅者秒出图。真正的"转发给前端"由本方法外的
+     * frontendRegistry.broadcast() 统一完成（设备发什么，订阅者收什么）。
+     */
+    private void handleVideoFrame(ObjectNode node, String deviceId, String rawPayload) {
+        if (deviceId == null || deviceId.isEmpty()) {
+            throw new IllegalArgumentException("video_frame 缺少 deviceId");
+        }
+        JsonNode imgNode = first(node, "image", "data", "frame");
+        if (imgNode == null || imgNode.asText().isEmpty()) {
+            throw new IllegalArgumentException("video_frame 缺少图片数据字段（image/data/frame）");
+        }
+        String base64 = imgNode.asText();
+        // 兼容 data:image/jpeg;base64,xxxx 这种带前缀的写法
+        int comma = base64.indexOf(',');
+        if (comma >= 0) {
+            base64 = base64.substring(comma + 1);
+        }
+        byte[] jpeg;
+        try {
+            jpeg = Base64.getDecoder().decode(base64);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("video_frame 的图片不是合法 base64");
+        }
+        videoFrameStore.putFrame(deviceId, jpeg);
+        videoFrameStore.putFrameJson(deviceId, rawPayload);
+        log.info("[视频帧] deviceId={}, size={} bytes", deviceId, jpeg.length);
     }
 
     /** 把错误回给设备端，避免"发了数据却查不到、只能翻服务端日志"的尴尬 */
