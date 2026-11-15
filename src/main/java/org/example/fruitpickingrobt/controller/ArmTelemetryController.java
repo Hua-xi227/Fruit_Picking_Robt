@@ -1,7 +1,6 @@
 package org.example.fruitpickingrobt.controller;
 
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -20,6 +19,9 @@ import java.util.Map;
  * 数据来源：MySQL 表 arm_telemetry（6 个关节角 + TCP 位姿）
  * 前端面板：机械臂动态信息 / TCP 位姿（每 1 秒拉取一次）
  *
+ * 说明：跨域由全局 WebMvcConfig#corsFilter 统一处理，此处无需 @CrossOrigin
+ *      （前端通过 nginx 同源访问 /fruitpicking/api/...，本身不跨域）
+ *
  * 单位说明：
  *   joint   关节角，度(deg)          —— 数据库原样
  *   pose.x/y/z  TCP 位置，毫米(mm)   —— 数据库原样
@@ -27,7 +29,6 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/api/arm-telemetry")
-@CrossOrigin(origins = "*")
 public class ArmTelemetryController {
 
     @Resource
