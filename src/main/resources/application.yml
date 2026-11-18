@@ -124,5 +124,6 @@ security:
       - /api/devices/**
       - /ws/**
       - /api/chassis/**
+      - /api/arm-telemetry/**
     admin-paths:
       - /api/v1/admin/**
