@@ -1,5 +1,6 @@
 package org.example.fruitpickingrobt.websocket;
 
+import org.example.fruitpickingrobt.service.control.EmergencyStopGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -54,6 +55,13 @@ public class DeviceSessionRegistry {
     /** deviceId -> 最近一次收到心跳/任意上行消息的时间戳（毫秒） */
     private final ConcurrentHashMap<String, Long> lastHeartbeatAt = new ConcurrentHashMap<>();
 
+    /** 急停状态守护器：设备断线时清理其急停标志，避免重连后仍被锁死 */
+    private final EmergencyStopGuard emergencyStopGuard;
+
+    public DeviceSessionRegistry(EmergencyStopGuard emergencyStopGuard) {
+        this.emergencyStopGuard = emergencyStopGuard;
+    }
+
     /** 登记一个设备会话（同一设备重复连接时，新会话覆盖旧会话） */
     public void register(String deviceId, WebSocketSession session) {
         if (deviceId == null || session == null) {
@@ -104,6 +112,7 @@ public class DeviceSessionRegistry {
         }
         sessions.remove(deviceId);
         lastHeartbeatAt.remove(deviceId);
+        emergencyStopGuard.remove(deviceId);
         log.info("[会话注销] deviceId={}, 当前在线={}", deviceId, sessions.size());
     }
 

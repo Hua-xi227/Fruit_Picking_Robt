@@ -40,15 +40,18 @@ public class CommandService {
     private final DeviceSessionRegistry registry;
     private final CommandAckHandler ackHandler;
     private final ObjectMapper objectMapper;
+    private final EmergencyStopGuard emergencyStopGuard;
 
     public CommandService(CommandLogDAO commandLogDAO,
                           DeviceSessionRegistry registry,
                           CommandAckHandler ackHandler,
-                          ObjectMapper objectMapper) {
+                          ObjectMapper objectMapper,
+                          EmergencyStopGuard emergencyStopGuard) {
         this.commandLogDAO = commandLogDAO;
         this.registry = registry;
         this.ackHandler = ackHandler;
         this.objectMapper = objectMapper;
+        this.emergencyStopGuard = emergencyStopGuard;
     }
 
     /**
@@ -73,6 +76,11 @@ public class CommandService {
         // 2) 设备在线检查（直连 ConcurrentHashMap，O(1)）
         if (!registry.isOnline(req.getDeviceId())) {
             return CommandResult.fail("设备不在线: " + req.getDeviceId());
+        }
+
+        // ★ 急停指令先置位急停标志，再下发。确保急停后所有运动指令被拦截。
+        if ("emergency_stop".equals(req.getCommand())) {
+            emergencyStopGuard.trigger(req.getDeviceId());
         }
 
         // 3) 组装日志并落库（PENDING）

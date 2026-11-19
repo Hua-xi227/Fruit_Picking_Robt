@@ -43,15 +43,18 @@ public class ChassisCommandService {
     private final ChassisCommandDAO dao;
     private final ChassisStateCache cache;
     private final ObjectMapper objectMapper;
+    private final EmergencyStopGuard emergencyStopGuard;
 
     public ChassisCommandService(DeviceSessionRegistry registry,
                                  ChassisCommandDAO dao,
                                  ChassisStateCache cache,
-                                 ObjectMapper objectMapper) {
+                                 ObjectMapper objectMapper,
+                                 EmergencyStopGuard emergencyStopGuard) {
         this.registry = registry;
         this.dao = dao;
         this.cache = cache;
         this.objectMapper = objectMapper;
+        this.emergencyStopGuard = emergencyStopGuard;
     }
 
     /**
@@ -86,6 +89,15 @@ public class ChassisCommandService {
             cmd.setMessage("设备不在线，指令未下发");
             dao.insert(cmd);
             return cmd;
+        }
+
+        // ★ 急停/清错先操作状态标志，再下发命令。
+        //   急停置位必须在下发之前完成——这样后续任何 forwardMotion 线程
+        //   都能立即看到急停激活，从根本上阻止运动指令覆盖急停。
+        if ("emergency_stop".equals(action)) {
+            emergencyStopGuard.trigger(deviceId);
+        } else if ("clear_error".equals(action)) {
+            emergencyStopGuard.release(deviceId);
         }
 
         try {
@@ -143,6 +155,19 @@ public class ChassisCommandService {
         if (deviceId == null || deviceId.isBlank()) {
             return;
         }
+
+        // ★ 急停激活时，拦截所有非零运动指令，只允许 (0,0) 通过。
+        //   防止前端按住前进键时，运动指令持续覆盖急停清零的目标速度。
+        if (emergencyStopGuard.isActive(deviceId)) {
+            if (linear != 0.0 || angular != 0.0) {
+                log.warn("[急停拦截] deviceId={} 急停激活中，忽略运动指令 linear={}, angular={}",
+                        deviceId, linear, angular);
+                // 强制把目标归零，确保车载控制环拿不到非零值
+                cache.saveTarget(deviceId, 0.0, 0.0);
+                return;
+            }
+        }
+
         // 安全钳制：SCOUT 2.0 最高 1.67 m/s
         linear = Math.max(-1.67, Math.min(1.67, linear));
 
