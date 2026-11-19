@@ -16,7 +16,7 @@ public class VideoFrameStore {
     // 使用 AtomicReference 保证多线程下替换帧的原子性
     private final AtomicReference<byte[]> currentFrame = new AtomicReference<>(new byte[0]);
 
-    // 记录每个设备上传的视频帧（JPEG 二进制）
+    // 记录每个设备上传的视频帧
     private final ConcurrentHashMap<String, byte[]> deviceFrames = new ConcurrentHashMap<>();
 
     // 记录每个设备最近一帧 video_frame 消息的原始 JSON（用于新订阅者秒出图）

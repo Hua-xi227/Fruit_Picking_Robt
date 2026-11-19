@@ -3,83 +3,50 @@ package org.example.fruitpickingrobt.websocket;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.example.fruitpickingrobt.dto.chassis.ChassisTelemetryDTO;
-import org.example.fruitpickingrobt.service.chassis.ChassisTelemetryService;
 import org.example.fruitpickingrobt.service.control.CommandAckHandler;
 import org.example.fruitpickingrobt.service.telemetry.DeviceTelemetryService;
-import org.example.fruitpickingrobt.store.VideoFrameStore;
+import org.example.fruitpickingrobt.websocket.DeviceSessionRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
-import org.springframework.web.socket.BinaryMessage;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
-import java.util.Base64;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 
-/**
- * 统一设备端点 /ws/location：接收设备上行数据，并负责指令下行。
- *
- * 原来这里只处理三类低频数据（location / status / armParams），
- * 现在新增底盘 50Hz 遥测（type=chassis），同时修掉三个历史问题：
- *
- * 1) 【新增】chassis 快速路径
- *    底盘帧必须在 dispatch() 的「类型猜测」之前拦截。
- *    因为 messageType() 里有兜底逻辑：没写 type 时，只要带 lat+lng 就判成 location。
- *    而底盘帧恰好带 latitude/longitude，不拦截就会被误判、被经纬度校验卡住、静默丢弃。
- *
- * 2) 【修复】删掉无条件广播
- *    旧代码在方法末尾把每条上行消息原样广播给所有连接（**含发送者自己**）。
- *    1Hz 时无所谓，50Hz 时设备每秒会收回自己 50 条包，嵌入式板子直接被打满。
- *    现在改成：只推给「订阅了该设备的前端」（走 /ws/frontend），设备之间不再互推。
- *
- * 3) 【修复】错误不再静默
- *    旧代码 catch 后只打日志，设备端完全不知道自己发的消息被拒了。
- *    现在会给设备回一条 {"type":"error","message":"..."}，调试时能立刻定位。
- */
+/** 接收设备上报，处理后端 A 的三类数据，并保留原有 WebSocket 广播。 */
 @Component
 public class LocationWebSocketHandler extends TextWebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(LocationWebSocketHandler.class);
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
 
-    /** 仅用于统计在线连接数，不再用于广播 */
     private final CopyOnWriteArraySet<WebSocketSession> sessions = new CopyOnWriteArraySet<>();
+    private final ConcurrentHashMap<String, String> sessionSubscriptions = new ConcurrentHashMap<>(); // 保存网页会话订阅的设备，避免多设备数据串流。
     /** sessionId -> deviceId，用于连接关闭时清理注册表（下行控制用） */
     private final ConcurrentHashMap<String, String> sessionDeviceIds = new ConcurrentHashMap<>();
     private final DeviceTelemetryService telemetryService;
     private final ObjectMapper objectMapper;
     private final DeviceSessionRegistry deviceSessionRegistry;
     private final CommandAckHandler commandAckHandler;
-    private final ChassisTelemetryService chassisTelemetryService;
-    private final FrontendSessionRegistry frontendRegistry;
-    private final VideoFrameStore videoFrameStore;
 
     public LocationWebSocketHandler(DeviceTelemetryService telemetryService,
                                     ObjectMapper objectMapper,
                                     DeviceSessionRegistry deviceSessionRegistry,
-                                    CommandAckHandler commandAckHandler,
-                                    ChassisTelemetryService chassisTelemetryService,
-                                    FrontendSessionRegistry frontendRegistry,
-                                    VideoFrameStore videoFrameStore) {
+                                    CommandAckHandler commandAckHandler) {
         this.telemetryService = telemetryService;
         this.objectMapper = objectMapper;
         this.deviceSessionRegistry = deviceSessionRegistry;
         this.commandAckHandler = commandAckHandler;
-        this.chassisTelemetryService = chassisTelemetryService;
-        this.frontendRegistry = frontendRegistry;
-        this.videoFrameStore = videoFrameStore;
     }
 
     @Override
@@ -92,29 +59,34 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     @Override
     protected void handleTextMessage(WebSocketSession sender, TextMessage message) {
         String payload = message.getPayload();
-        String deviceId = null;
+        ObjectNode parsedMessage = null; // 保存解析后的对象，供后续设备范围过滤使用。
         try {
             JsonNode node = objectMapper.readTree(payload);
             if (!node.isObject()) {
                 throw new IllegalArgumentException("消息必须是 JSON 对象");
             }
+            parsedMessage = (ObjectNode) node; // 缓存对象消息，避免广播阶段重复解析文本。
             String type = node.path("type").asText("");
-
-            // ★ 底盘遥测 50Hz 快速路径：必须放在 dispatch() 之前
-            if ("chassis".equalsIgnoreCase(type)) {
-                handleChassis(sender, (ObjectNode) node);
-                return;
-            }
-
+            if ("subscribe".equalsIgnoreCase(type)) { // 兼容网页端独立订阅通道的握手消息。
+                String subscribedDevice = deviceId((ObjectNode) node); // 校验并读取网页要订阅的设备。
+                sessionSubscriptions.put(sender.getId(), subscribedDevice); // 记录当前网页连接的设备订阅。
+                ObjectNode reply = objectMapper.createObjectNode(); // 创建订阅确认消息。
+                reply.put("type", "subscribed"); // 标记订阅确认类型。
+                reply.put("deviceId", subscribedDevice); // 回传实际订阅设备。
+                sender.sendMessage(new TextMessage(reply.toString())); // 只向当前网页连接发送确认。
+                return; // 订阅控制消息不参与设备数据广播和落库。
+            } // 结束网页订阅握手分支。
             // —— 下行控制：登记设备会话，指令需要精准下发到具体设备 ——
-            try {
-                deviceId = deviceId((ObjectNode) node);
-                deviceSessionRegistry.register(deviceId, sender);
-                sessionDeviceIds.put(sender.getId(), deviceId);
-            } catch (IllegalArgumentException ignored) {
-                // 没有合法 deviceId 的消息（如纯 ack / result）不登记
-            }
-
+            String deviceId = null;
+            if (!sessionSubscriptions.containsKey(sender.getId())) { // 网页订阅会话不能覆盖真实机器人会话注册。
+                try { // 设备连接消息才进入下行控制注册表。
+                    deviceId = deviceId((ObjectNode) node); // 读取并校验机器人设备 ID。
+                    deviceSessionRegistry.register(deviceId, sender); // 记录机器人当前 WebSocket 会话。
+                    sessionDeviceIds.put(sender.getId(), deviceId); // 保存连接关闭时的清理关系。
+                } catch (IllegalArgumentException ignored) { // 纯 ACK 或结果消息没有合法设备 ID 时不登记。
+                    // 没有合法 deviceId 的消息不进入设备会话注册表。
+                } // 结束机器人会话注册异常处理。
+            } // 结束网页订阅会话保护分支。
             // —— 心跳保活：任何带 deviceId 的合法消息都刷新存活时间 ——
             if ("heartbeat".equalsIgnoreCase(type) && deviceId != null) {
                 deviceSessionRegistry.recordHeartbeat(deviceId);
@@ -126,131 +98,33 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
             } else if ("result".equalsIgnoreCase(type)) {
                 commandAckHandler.onResult(node);
             }
-
-            // —— 视频帧：type=video_frame（兼容 type=video）——
-            //   1) base64 解码后存进 VideoFrameStore，供 MJPEG 流 / 快照接口兜底；
-            //   2) 缓存原始 JSON，新前端订阅时可秒出图；
-            //   3) 帧本身会随下面的 broadcast 转发给所有订阅了该设备的前端。
-            if ("video_frame".equalsIgnoreCase(type) || "video".equalsIgnoreCase(type)) {
-                handleVideoFrame((ObjectNode) node, deviceId, payload);
-            } else {
-                dispatch((ObjectNode) node);
-            }
-
-            // 低频数据（位置/状态/机械臂/视频帧）落库成功后，转发给订阅了该设备的前端。
-            // 替代原来的无条件广播：设备之间不再互推，设备也不会收到自己发的包。
-            if (deviceId != null) {
-                frontendRegistry.broadcast(deviceId, payload);
-            }
+            dispatch((ObjectNode) node);
         } catch (IllegalArgumentException e) {
             log.warn("设备上报参数无效: {}", e.getMessage());
-            sendError(sender, e.getMessage());
         } catch (Exception e) {
             log.error("设备上报解析或存储失败: {}", e.getMessage(), e);
-            sendError(sender, "消息处理失败: " + e.getMessage());
         }
-    }
 
-    /**
-     * 二进制视频帧直传（低延迟路径）。
-     *
-     * 设备端通过 WebSocket 直接发送 JPEG 二进制数据，跳过 HTTP / base64 / JSON 开销。
-     * 约定：连接建立后先发一条带 deviceId 的文本消息登记会话，
-     *       之后所有二进制消息都视为该设备的视频帧。
-     *
-     * 性能对比（240x180 JPEG）：
-     *   HTTP POST: TCP 握手 + HTTP 头 + multipart 解析 + base64 解码 ≈ 5-20ms/帧
-     *   WS binary: 直接写字节 ≈ 0.1-0.5ms/帧
-     */
-    @Override
-    protected void handleBinaryMessage(WebSocketSession session, BinaryMessage message) {
-        String deviceId = sessionDeviceIds.get(session.getId());
-        if (deviceId == null) {
-            sendError(session, "请先发送带 deviceId 的文本消息登记设备");
-            return;
-        }
-        ByteBuffer buffer = message.getPayload();
-        byte[] data = new byte[buffer.remaining()];
-        buffer.get(data);
-        if (data.length < 2) {
-            return;
-        }
-        // 判断二进制类型：JPEG 以 0xFFD8 开头，WebM 以 0x1A45DFA3 (EBML) 开头
-        boolean isJpeg = (data[0] & 0xFF) == 0xFF && (data[1] & 0xFF) == 0xD8;
-        if (isJpeg) {
-            // JPEG 快照：存 VideoFrameStore 供 /api/video/snapshot 使用
-            videoFrameStore.putFrame(deviceId, data);
-        }
-        // 无论是 WebM 视频块还是 JPEG 帧，都直接二进制转发给订阅前端
-        frontendRegistry.broadcastBinary(deviceId, data);
-    }
-
-    /**
-     * 底盘遥测帧（50Hz）—— 这是最高频的路径，必须快。
-     * 只做三件事：登记会话、刷新心跳、交给 ChassisTelemetryService。
-     * 它内部会更新内存快照 + Redis 最新态 + 采样入队，真正的写库由定时线程批量完成。
-     */
-    private void handleChassis(WebSocketSession sender, ObjectNode node) throws Exception {
-        ChassisTelemetryDTO dto = objectMapper.treeToValue(node, ChassisTelemetryDTO.class);
-        String deviceId = dto.getDeviceId();
-        if (deviceId == null || deviceId.isBlank()) {
-            throw new IllegalArgumentException("底盘帧缺少 deviceId");
-        }
-        // 首次收到数据也顺便登记会话（有的小车可能不发 register 就直接推数据）
-        if (!sessionDeviceIds.containsKey(sender.getId())) {
-            deviceSessionRegistry.register(deviceId, sender);
-            sessionDeviceIds.put(sender.getId(), deviceId);
-        }
-        // 50Hz 遥测本身就证明设备活着，不用再单独发心跳
-        deviceSessionRegistry.recordHeartbeat(deviceId);
-        chassisTelemetryService.onTelemetry(dto);
-    }
-
-    /**
-     * 视频帧处理（type=video_frame / video）。
-     *
-     * 从 JSON 里取出 base64 图片，解码成 JPEG 字节存进 VideoFrameStore，
-     * 同时缓存原始 JSON 供新订阅者秒出图。真正的"转发给前端"由本方法外的
-     * frontendRegistry.broadcast() 统一完成（设备发什么，订阅者收什么）。
-     */
-    private void handleVideoFrame(ObjectNode node, String deviceId, String rawPayload) {
-        if (deviceId == null || deviceId.isEmpty()) {
-            throw new IllegalArgumentException("video_frame 缺少 deviceId");
-        }
-        JsonNode imgNode = first(node, "image", "data", "frame");
-        if (imgNode == null || imgNode.asText().isEmpty()) {
-            throw new IllegalArgumentException("video_frame 缺少图片数据字段（image/data/frame）");
-        }
-        String base64 = imgNode.asText();
-        // 兼容 data:image/jpeg;base64,xxxx 这种带前缀的写法
-        int comma = base64.indexOf(',');
-        if (comma >= 0) {
-            base64 = base64.substring(comma + 1);
-        }
-        byte[] jpeg;
-        try {
-            jpeg = Base64.getDecoder().decode(base64);
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("video_frame 的图片不是合法 base64");
-        }
-        videoFrameStore.putFrame(deviceId, jpeg);
-        videoFrameStore.putFrameJson(deviceId, rawPayload);
-        log.info("[视频帧] deviceId={}, size={} bytes", deviceId, jpeg.length);
-    }
-
-    /** 把错误回给设备端，避免"发了数据却查不到、只能翻服务端日志"的尴尬 */
-    private void sendError(WebSocketSession session, String msg) {
-        if (session == null || !session.isOpen()) {
-            return;
-        }
-        try {
-            ObjectNode n = objectMapper.createObjectNode();
-            n.put("type", "error");
-            n.put("message", msg);
-            n.put("ts", System.currentTimeMillis());
-            session.sendMessage(new TextMessage(n.toString()));
-        } catch (IOException ignored) {
-            // 连接已断，无需处理
+        String broadcastDeviceId = null; // 提取当前广播消息的设备范围。
+        if (parsedMessage != null) { // 只有合法对象消息才进入设备范围过滤。
+            try { // 无设备字段的广播消息仍保持原有全局广播行为。
+                broadcastDeviceId = deviceId(parsedMessage); // 读取当前消息所属设备。
+            } catch (IllegalArgumentException ignored) { // 纯协议消息没有设备 ID 时不做设备过滤。
+                // 保持广播给所有未订阅设备的会话。
+            } // 结束设备 ID 提取异常处理。
+        } // 结束合法对象消息的设备范围过滤。
+        for (WebSocketSession session : sessions) {
+            String subscription = sessionSubscriptions.get(session.getId()); // 读取网页会话的订阅设备。
+            if (subscription != null && broadcastDeviceId != null && !subscription.equals(broadcastDeviceId)) { // 过滤其它设备的遥测消息。
+                continue; // 当前消息不属于该网页订阅范围。
+            } // 结束网页设备订阅过滤分支。
+            if (session.isOpen()) {
+                try {
+                    session.sendMessage(message);
+                } catch (IOException e) {
+                    log.error("WebSocket 发送失败: id={}", session.getId(), e);
+                }
+            }
         }
     }
 
@@ -266,7 +140,7 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
                 handleArmParams(message);
                 break;
             default:
-                // 其他消息只落库外转发，不额外处理。
+                // 其他消息只广播。
         }
     }
 
@@ -283,9 +157,12 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     }
 
     public void handleStatus(ObjectNode message) {
-        if (!message.hasNonNull("status")) {
-            throw new IllegalArgumentException("状态消息缺少 status 字段");
-        }
+        if (!message.hasNonNull("status") && !message.hasNonNull("phase") // 允许任务状态和导航阶段作为状态消息。
+                && !message.hasNonNull("taskStatus") && !message.hasNonNull("controlMode") // 允许遥测和底盘状态统一落库。
+                && !message.has("cameraConnected") && !message.has("armConnected") // 接收设备连接状态遥测。
+                && !message.has("chassisConnected") && !message.has("lastMessage")) { // 接收日志和设备链路状态遥测。
+            throw new IllegalArgumentException("状态消息缺少 status、phase、taskStatus 或 controlMode 字段"); // 给出明确的协议错误。
+        } // 结束状态消息字段校验。
         save(message, DeviceTelemetryService.STATUS, "status", null, null);
     }
 
@@ -332,6 +209,9 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
             if (message.has("status")) {
                 return "status";
             }
+            if (message.has("phase") || message.has("taskStatus") || message.has("controlMode")) { // 识别没有显式 type 的遥测对象。
+                return "status"; // 将遥测对象按状态记录保存。
+            } // 结束无 type 遥测识别分支。
             return "";
         }
 
@@ -342,6 +222,12 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
         if (normalized.equals("status") || normalized.equals("devicestatus")) {
             return "status";
         }
+        if (normalized.equals("telemetry") && message.has("armParams")) { // 机械臂遥测沿用原有机械臂参数存储类型。
+            return "armParams"; // 让最新机械臂状态可从后端查询。
+        } // 结束机械臂遥测识别分支。
+        if (normalized.equals("telemetry") || normalized.equals("chassisstate")) { // 兼容机器人端和网页端使用的实时状态类型。
+            return "status"; // 状态类遥测进入统一状态存储。
+        } // 结束通用状态遥测识别分支。
         if (normalized.equals("armparams") || normalized.equals("armparameters")) {
             return "armParams";
         }
@@ -411,13 +297,11 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         sessions.remove(session);
+        sessionSubscriptions.remove(session.getId()); // 清理网页订阅，避免连接关闭后残留设备过滤条件。
+        // —— 下行控制：清理设备会话登记 ——
         String deviceId = sessionDeviceIds.remove(session.getId());
         if (deviceId != null) {
-            // ★ 必须带 session 做条件移除：只有登记的会话确实是当前这个时才注销，
-            //   否则真车和模拟器共用 deviceId 时，一端断线会把另一端一起注销掉。
-            deviceSessionRegistry.unregister(deviceId, session);
-            // 清理内存快照，避免推送线程继续推已离线设备的陈旧数据
-            chassisTelemetryService.evict(deviceId);
+            deviceSessionRegistry.unregister(deviceId);
         }
         log.info("客户端断开: id={}, 当前在线={}", session.getId(), sessions.size());
     }
@@ -425,6 +309,7 @@ public class LocationWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
         sessions.remove(session);
+        sessionSubscriptions.remove(session.getId()); // 传输异常时同步清理网页订阅状态。
         log.error("WebSocket 传输错误: id={}", session.getId(), exception);
     }
 }

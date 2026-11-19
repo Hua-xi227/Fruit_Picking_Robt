@@ -64,7 +64,7 @@ spring:
 # MyBatis 配置
 mybatis:
   mapper-locations: classpath:mapper/*.xml
-  type-aliases-package: org.example.fruitpickingrobt.entity
+  type-aliases-package: com.FruitPickingRobt.entity
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
@@ -77,32 +77,13 @@ logging:
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
 
-#配置项
-app:
-  chassis:
-    # ★ 服务端推给前端的频率间隔（毫秒）。50 = 20Hz（推荐）
-    #   这就是「系统侧从云拉取数据的刷新频率」
-    #   想更省流量改 100（10Hz）；想更流畅改 33（30Hz）；不需要重启小车，改完重启后端即可
-    push-interval-ms: 50
-    # 批量落库触发间隔（毫秒）。每攒够一批或到点就写一次 MySQL
-    flush-interval-ms: 1000
-    # 落库采样率：每 N 帧存 1 帧。10 = 50Hz 上报时按 10Hz 落库
-    #   （50Hz 全量 = 432万行/天 ≈ 2.2GB/天，撑不住；10Hz ≈ 0.43GB/天）
-    db-sample-ratio: 10
-    # 单批最大条数（防止一条 SQL 过大触发 max_allowed_packet）
-    max-batch-size: 200
-    # 历史查询单次最大返回条数
-    history-max-limit: 2000
 
+app:
   history-default-limit: 1000
   history-max-limit: 5000
-  # 设备会话心跳超时（秒）。0 或负数 = 停用僵尸会话清理；
-  # 原来设 0，导致断线的设备永远显示"在线"，指令照样往死连接上发。
-  # 现在改 60：设备只要持续上报数据（遥测/位置/心跳任一）就不会被踢；
-  # 纯待命不发数据的设备需要自己定期发 {"type":"heartbeat","deviceId":"..."} 保活。
-  # 注意：只要带合法 deviceId 的上行消息都会刷新存活时间，不强制要求心跳消息。
+  # 设备会话心跳超时（秒）。0 或负数 = 停用僵尸会话清理（测试用）；生产建议设 60
   device-session:
-    stale-timeout-seconds: 60
+    stale-timeout-seconds: 0
 
 security:
   jwt:
@@ -123,7 +104,5 @@ security:
       - /test-helper.html
       - /api/devices/**
       - /ws/**
-      - /api/chassis/**
-      - /api/arm-telemetry/**
     admin-paths:
       - /api/v1/admin/**

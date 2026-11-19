@@ -2,7 +2,6 @@ package org.example.fruitpickingrobt.websocket;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.example.fruitpickingrobt.service.chassis.ChassisTelemetryService;
 import org.example.fruitpickingrobt.service.control.CommandAckHandler;
 import org.example.fruitpickingrobt.service.telemetry.DeviceTelemetryService;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,8 +28,6 @@ class LocationWebSocketHandlerTest {
     private DeviceTelemetryService telemetryService;
     private DeviceSessionRegistry deviceSessionRegistry;
     private CommandAckHandler commandAckHandler;
-    private ChassisTelemetryService chassisTelemetryService;
-    private FrontendSessionRegistry frontendRegistry;
     private LocationWebSocketHandler handler;
 
     @BeforeEach
@@ -38,11 +35,8 @@ class LocationWebSocketHandlerTest {
         telemetryService = mock(DeviceTelemetryService.class);
         deviceSessionRegistry = mock(DeviceSessionRegistry.class);
         commandAckHandler = mock(CommandAckHandler.class);
-        chassisTelemetryService = mock(ChassisTelemetryService.class);
-        frontendRegistry = mock(FrontendSessionRegistry.class);
         handler = new LocationWebSocketHandler(
-                telemetryService, objectMapper, deviceSessionRegistry, commandAckHandler,
-                chassisTelemetryService, frontendRegistry);
+                telemetryService, objectMapper, deviceSessionRegistry, commandAckHandler);
     }
 
     @Test
