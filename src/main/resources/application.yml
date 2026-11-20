@@ -67,13 +67,15 @@ mybatis:
   type-aliases-package: com.FruitPickingRobt.entity
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # 关闭 SQL 打印（原来每秒的遥测落库 SQL 全部打到日志，是 30G 日志的主要来源之一）
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
 
 # 日志配置
 logging:
   level:
     root: info
-    com.FruitPickingRobt: debug
+    # 原来是 debug：秒级遥测/视频帧日志会把磁盘写满
+    com.FruitPickingRobt: info
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
 
@@ -104,5 +106,7 @@ security:
       - /test-helper.html
       - /api/devices/**
       - /ws/**
+      - /api/chassis/**
+      - /api/arm-telemetry/**
     admin-paths:
       - /api/v1/admin/**

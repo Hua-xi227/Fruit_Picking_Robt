@@ -45,14 +45,14 @@ public class AuthorizationInterceptor implements HandlerInterceptor {
         response.setContentType(HttpConstant.MIME_JSON);
 
         String token = request.getHeader(properties.getHeader());
-        log.info("token: {}", token);
+        log.debug("token: {}", token);
         if (!StringUtil.isEmpty(token) && StringUtil.JS_UNDEFINED.equals(token)) {
             token = StringUtil.EMPTY;
         }
 
         // 判断当前请求是否要认证，不需要验证就不用解析jwt什么的了
         String path = request.getServletPath();
-        log.info("uri: {}", path);
+        log.debug("uri: {}", path);
         if (!properties.isNeedAuth(path)) {
             return true;
         }
@@ -76,12 +76,12 @@ public class AuthorizationInterceptor implements HandlerInterceptor {
 
         // 增加日志：打印 Redis key
         String key = LoginConstant.TOKEN_CACHE_PREFIX + jwt;
-        log.info("Redis key: {}", key);
+        log.debug("Redis key: {}", key);
 
         // token不为空，开始解析
         String s = stringRedisTemplate.opsForValue().get(LoginConstant.TOKEN_CACHE_PREFIX + jwt);
 
-        log.info("Redis value (userId): {}", s);  // 如果为 null 会打印 null
+        log.debug("Redis value (userId): {}", s);  // 如果为 null 会打印 null
 
         Long userId = null;
 

@@ -45,7 +45,7 @@ public class VideoUploadController {
             } else {
                 videoFrameStore.putFrame(bytes);
             }
-            log.info("收到视频帧：deviceId={}, size={} bytes", deviceId, bytes.length);
+            log.debug("收到视频帧：deviceId={}, size={} bytes", deviceId, bytes.length);
             return Result.success("上传成功");
         } catch (IOException e) {
             log.error("读取上传文件失败", e);
