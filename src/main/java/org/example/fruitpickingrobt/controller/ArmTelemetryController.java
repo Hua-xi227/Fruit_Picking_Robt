@@ -2,11 +2,15 @@ package org.example.fruitpickingrobt.controller;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import javax.annotation.Resource;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -58,6 +62,83 @@ public class ArmTelemetryController {
             data.add(toDto(r));
         }
         return result(data);
+    }
+
+    /**
+     * 上传一帧：POST /api/arm-telemetry
+     *
+     * 请求体：
+     * {
+     *   "ts": "2026-11-20 10:00:00.123",     // 可选，缺省用服务器时间
+     *   "joint": [j1,j2,j3,j4,j5,j6],        // 度(deg)
+     *   "pose": {"x":..,"y":..,"z":..,        // 毫米(mm)
+     *            "rx":..,"ry":..,"rz":..}     // 度(deg)，入库时转弧度
+     * }
+     */
+    @PostMapping
+    public Map<String, Object> upload(@RequestBody Map<String, Object> body) {
+        try {
+            Object jointObj = body.get("joint");
+            if (!(jointObj instanceof List) || ((List<?>) jointObj).size() < 6) {
+                throw new IllegalArgumentException("joint 必须是含 6 个数的数组");
+            }
+            List<?> j = (List<?>) jointObj;
+
+            Map<?, ?> pose = (body.get("pose") instanceof Map)
+                    ? (Map<?, ?>) body.get("pose")
+                    : java.util.Collections.emptyMap();
+
+            LocalDateTime ts = parseTs(body.get("ts") == null ? null : body.get("ts").toString());
+
+            jdbc.update("INSERT INTO arm_telemetry "
+                            + "(ts,j1,j2,j3,j4,j5,j6,x_mm,y_mm,z_mm,rx,ry,rz) "
+                            + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ts,
+                    num(j.get(0)), num(j.get(1)), num(j.get(2)),
+                    num(j.get(3)), num(j.get(4)), num(j.get(5)),
+                    num(pose.get("x")), num(pose.get("y")), num(pose.get("z")),
+                    Math.toRadians(num(pose.get("rx"))),
+                    Math.toRadians(num(pose.get("ry"))),
+                    Math.toRadians(num(pose.get("rz"))));
+
+            Long id = jdbc.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("id", id);
+            data.put("ts", ts.toString());
+            return result(data);
+        } catch (Exception e) {
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("success", 400);
+            resp.put("errorMsg", e.getMessage());
+            resp.put("data", null);
+            return resp;
+        }
+    }
+
+    private double num(Object v) {
+        if (v == null) {
+            return 0d;
+        }
+        if (v instanceof Number) {
+            return ((Number) v).doubleValue();
+        }
+        return Double.parseDouble(v.toString());
+    }
+
+    private LocalDateTime parseTs(String s) {
+        if (s == null || s.isBlank()) {
+            return LocalDateTime.now();
+        }
+        String t = s.trim().replace('T', ' ');
+        if (t.endsWith("Z")) {
+            t = t.substring(0, t.length() - 1);
+        }
+        int plus = t.indexOf('+');
+        if (plus > 0) {
+            t = t.substring(0, plus);
+        }
+        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss[.SSS][.SS][.S]");
+        return LocalDateTime.parse(t, fmt);
     }
 
     private Map<String, Object> result(Object data) {
